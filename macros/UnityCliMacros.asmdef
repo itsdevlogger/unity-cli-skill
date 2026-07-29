@@ -1,0 +1,19 @@
+{
+    "name": "UnityCliMacros",
+    "rootNamespace": "",
+    "references": [
+        "GUID:71e9815631ba2574b92564e93b8efc9c",
+        "GUID:a3ca9b2d97442e0499ea28b681f751d9"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

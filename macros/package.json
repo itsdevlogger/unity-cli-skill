@@ -1,0 +1,10 @@
+{
+  "name": "com.unitycli.macros",
+  "version": "1.0.0",
+  "displayName": "Unity CLI Macros",
+  "description": "Shared m_* CLI macros used by the unity-cli skill. Lives outside any Unity project so every project on this machine compiles the same macro set.",
+  "unity": "6000.0",
+  "author": {
+    "name": "unity-cli skill"
+  }
+}
