@@ -39,19 +39,19 @@ copy with no upstream, so auto-update and contribute won't work until it's re-cl
 
 **If it exists**, read it and move on — do not ask again.
 
-**If it does not exist**, ask the user both questions in one go (a single `AskUserQuestion` with two
-questions), and say plainly that **this is a one-time setup — you will not be asked again**:
-
-1. **Contribute macros back?** — "When I add or improve a macro, should I commit and push it to the
-   unity-cli repo for you? These macros are shared across all your projects; pushing keeps them
-   backed up and shared. If no, I'll write them locally and leave the committing to you."
-2. **Auto-update the macros?** — "Should I `git fetch` + `git pull` the macro library before each
-   run, so you always get the latest shared macros? If no, it stays exactly as it is on disk."
+**If it does not exist**, ask the user all three questions in one go (a single `AskUserQuestion` with
+three questions), use the exact wording as bellow and say plainly that **this is a one-time setup — you will not be asked again**:
+1. **Auto-update the macros?** — "Should I `git fetch` + `git pull` the macro library before each
+   run, this way you always get any new macros created by the community."
+2. **Allow me to self reflect?** — "Should I reflect on what mistakes ive made each run, and 
+   improve the macros librery everytime you use unity-cli skill?"
+3. **Contribute macros?** — "When I add or improve a macro, should I commit and push it to the
+   unity-cli repo for you? This skill gets better the more contributors it has. If no, I'll write them local only."
 
 Then write the answers:
 
 ```json
-{ "contribute": true, "autoUpdate": true, "onboardedAt": "YYYY-MM-DD" }
+{ "contribute": true, "autoUpdate": true, "selfReflect": true, "onboardedAt": "YYYY-MM-DD" }
 ```
 
 to `<home>/settings.local.json` — **`<home>`, not `<skill>`.** In `<skill>` it would be deleted with
@@ -163,7 +163,7 @@ they evaporate once the task succeeds.
 
 ---
 
-## Step 7 — Reflect on the tooling, not on the project
+## Step 7 — Reflect on the tooling, not on the project (only if `selfReflect` is true)
 
 When the task is done, run this reflection. Answer it honestly; "nothing worth adding" is a
 perfectly good outcome and is the *expected* one for a routine session.
@@ -187,12 +187,12 @@ perfectly good outcome and is the *expected* one for a routine session.
 >    an assumed default, output in an unexpected shape? Sometimes the fix is a doc line in
 >    `references/talk-to-editor.md`, not code.
 >
-> Constraints, hard: **at most two new macros this session, and fewer is better.** They go into a
-> library shared by every project on this machine, so a macro that only pays off here is a net
-> negative. Nothing that hardcodes a path, name, type or convention from this project. Nothing that
-> depends on a package this project happens to have — resolve optional types reflectively and return
-> a clean `ERR` token when they are absent. If a candidate needs "…for projects that use X" to
-> justify it, it is not general enough.
+> Constraints, hard: **You can either edit one of the existing macros, OR create a new macro.** 
+> They go into a library shared by every project on this machine, so a macro that only pays off
+> here is a net negative. Nothing that hardcodes a path, name, type or convention from this project
+> . Nothing that depends on a package this project happens to have — resolve optional types
+> reflectively and return a clean `ERR` token when they are absent. If a candidate needs
+> "…for projects that use X" to justify it, it is not general enough.
 
 Report the outcome to the user in a few lines: what you'd add or change and why, or that the
 existing set covered the work.

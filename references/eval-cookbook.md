@@ -7,7 +7,7 @@ touching more than a few objects, because one call replaces N round trips.
 
 Before writing one, check `m_find_macro` — a macro that already does the job is cheaper and
 better-tested than a fresh snippet. And if the snippet is something you'd want again, make it a
-macro under `Assets/Editor/unity-cli-macros/` instead (see SKILL.md).
+macro in the shared library at `C:/unity-cli-skill/macros/` instead (see SKILL.md).
 
 Two snippets in particular are already macros, because they got rewritten once per session before
 they were: iterating `SerializedObject` to list object references is `m_inspect`, and matching on

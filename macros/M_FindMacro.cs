@@ -66,7 +66,7 @@ public static class M_FindMacro
     private static bool isInitialized = false;
 
     /// Searches registered macros (CLI commands) by keyword and returns the best matches
-    [CliCommand("m_find_macro", "Search for a macro by keywords and return the best matches. Names starting with m_ are this project's own editable macros.")]
+    [CliCommand("m_find_macro", "Search for a macro by keywords and return the best matches. Names starting with m_ are editable macros from the shared library at C:/unity-cli-skill/macros.")]
     public static string FindMacro(
         [CliArg("q", "Keywords, separated by spaces or pipes", Required = true)] string keywords,
         [CliArg("m", "Maximum number of results to return", Required = false)] int maxResults = 5
@@ -140,7 +140,7 @@ public static class M_FindMacro
     private const string LEGEND =
         "r=results n=name s=score d=desc a=args[token,desc]; token: name:type then * required, =default, or ? optional-no-default; " +
         "type objectref takes a handle string ('/Root/Child', 'Assets/X.mat', 'guid:<hex>', instanceId); type json takes inline JSON; " +
-        "an m_ name prefix means a project-owned macro under Assets/Editor/unity-cli-macros (editable), anything else is built into the Pipeline package (fixed)";
+        "an m_ name prefix means a macro from the shared library at C:/unity-cli-skill/macros (editable, shared by every project on this machine), anything else is built into the Pipeline package (fixed)";
 
     private static string FormatResults(List<KeyValuePair<int, MacroInfo>> matches)
     {
