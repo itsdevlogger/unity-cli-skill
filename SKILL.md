@@ -5,7 +5,7 @@ description: Inspect and edit an ALREADY-EXISTING Unity project through a runnin
 
 # unity-cli
 
-Run these nine steps in order. Steps 1 to 5 are setup and are cheap; do not skip them and do not
+Run these seven steps in order. Steps 1 to 5 are setup and are cheap; do not skip them and do not
 start the user's task before step 6.
 
 Three paths matter, and confusing them is the single most damaging mistake available here:
@@ -15,6 +15,12 @@ Three paths matter, and confusing them is the single most damaging mistake avail
 | `<skill>` | the directory this file lives in | **Ephemeral.** The skill is installed from a zip into a session-scoped folder whose path changes every session and is deleted afterwards. Nothing may point at it and nothing may be stored in it. |
 | `<home>` | **`C:/unity-cli-skill`**, hardcoded, never ask the user | **Permanent.** The shared macro library, the git clone, and the settings file. Every Unity project on this machine links to `<home>/macros` as a local UPM package. |
 | `<project>` | the Unity project being worked on | The user's project. Only its `Packages/manifest.json` is ever touched by setup. |
+
+**`<home>`'s working tree is a live installed package, not a delivery repo.** Every Unity project on
+this machine compiles the files that are on disk there right now. So: **it must always hold every
+macro ever written, and no git operation may remove one from disk.** Never `checkout` a branch, never
+`stash`, never `reset --hard`. A macro that gets checked out from under the user is worse than a macro
+that was never contributed — it was compiled, verified, and then deleted from every project they own.
 
 `<skill>/macros/` is a **seed copy only**, used to populate `<home>` when git isn't available. Once
 `<home>` exists it is the sole source of truth: read, edit and push macros there, never in `<skill>`.
@@ -33,7 +39,7 @@ git clone --origin upstream https://github.com/itsdevlogger/unity-cli-skill "C:/
 
 That remote URL is fixed; use it verbatim. `--origin upstream` matters: **`upstream` is always the
 shared repo, `origin` is always the user's own fork** (added later, only if they contribute, see
-step 9). Never point `origin` at the shared repo; nobody has write access to it.
+step 7). Never point `origin` at the shared repo; nobody has write access to it.
 
 If the clone fails (no network, no git, folder exists but isn't a repo), copy `<skill>` to
 `C:/unity-cli-skill` instead and tell the user the library is a local copy with no upstream, so
@@ -50,22 +56,20 @@ git -C "C:/unity-cli-skill" remote rename origin upstream
 
 **If it exists**, read it and move on without asking again.
 
-**If it does not exist**, ask the user all three questions in one go (a single `AskUserQuestion` with
-three questions), use the exact wording as bellow and say plainly that **this is a one-time setup and
+**If it does not exist**, ask the user both questions in one go (a single `AskUserQuestion` with
+two questions), use the exact wording as bellow and say plainly that **this is a one-time setup and
 they will not be asked again**:
 1. **Auto-update the macros?** "Should I `git fetch` + `git pull` the macro library before each
    run, this way you always get any new macros created by the community."
-2. **Allow me to self reflect?** "Should I reflect on what mistakes ive made each run, and 
-   improve the macros librery everytime you use unity-cli skill?"
-3. **Contribute macros?** "When I add or improve a macro, should I push it to your fork of the
-   unity-cli repo and hand you a pull-request link? This skill gets better the more contributors it
+2. **Contribute macros?** "When I add or improve a macro, should I push it to your fork of the
+   unity-cli repo and open a pull request for you? This skill gets better the more contributors it
    has. You'll need a fork on GitHub, and I'll ask for its URL the first time there's something to
-   push. If no, I'll write macros local only."
+   push. I'll always check with you before opening anything. If no, I'll write macros local only."
 
 Then write the answers:
 
 ```json
-{ "contribute": true, "autoUpdate": true, "selfReflect": true, "onboardedAt": "YYYY-MM-DD" }
+{ "contribute": true, "autoUpdate": true, "onboardedAt": "YYYY-MM-DD" }
 ```
 
 to `<home>/settings.local.json`. That is **`<home>`, not `<skill>`.** In `<skill>` it would be deleted
@@ -75,13 +79,19 @@ not part of the repo.
 **1c. If `autoUpdate` is true**, update the library:
 
 ```bash
-git -C "C:/unity-cli-skill" fetch -q upstream && git -C "C:/unity-cli-skill" merge --ff-only upstream/main
+git -C "C:/unity-cli-skill" fetch -q upstream && git -C "C:/unity-cli-skill" pull --rebase upstream main
 ```
 
-If this fails (no network, no `upstream` remote, diverged history, local edits in the way, or a
-contribution branch still checked out from a previous session), say so in one line and continue. A
-stale macro set is not a reason to stop working. Don't force it: never `reset --hard` or discard
-local macro work to make the merge succeed.
+**`--rebase`, not `--ff-only`.** Step 7 commits contributions on `main` and leaves them there until
+upstream merges them, so `main` legitimately carries local commits and a fast-forward would be refused
+every run from the first contribution onwards. The rebase replays them on top of upstream and quietly
+drops each one as it lands upstream.
+
+If this fails (no network, no `upstream` remote, uncommitted edits in the way, or a conflict between a
+local macro and an upstream change to the same file), say so in one line and continue. A stale macro
+set is not a reason to stop working. Don't force it: never `reset --hard`, never `rebase --skip` a
+conflict away, never discard local macro work to make the update succeed. If a rebase stops mid-way,
+`git -C "C:/unity-cli-skill" rebase --abort` puts every file back and you carry on with the old macros.
 
 ---
 
@@ -174,73 +184,36 @@ cross-cutting rules that cause most first-attempt failures.
 
 ## Step 6: Do the user's task
 
-Work the request. Keep notes as you go on anything that fought back. You need them for step 7 and
-they evaporate once the task succeeds.
+Work the request, following the workflow in `references/talk-to-editor.md`: for each thing you need,
+look for an existing macro first, then decide one-off or recurring — a one-off goes through `eval`, a
+recurring need becomes a new or improved macro under `C:/unity-cli-skill/macros/`. That decision
+happens *while* you work, not in a review pass afterwards.
+
+Anything you write into the library there is what step 7 pushes.
 
 ---
 
-## Step 7: Reflect on the tooling, not on the project (only if `selfReflect` is true)
+## Step 7: Open a pull request (only if `contribute` is true)
 
-When the task is done, run this reflection. Answer it honestly; "nothing worth adding" is a
-perfectly good outcome and is the *expected* one for a routine session.
+Check `git -C "C:/unity-cli-skill" status --porcelain`. **If it's clean, you're done** — this session
+added no macros, which is the expected outcome for a routine task. Say nothing about it and stop.
 
-> Look back over the commands I ran this session, not at the game, at the tooling.
->
-> 1. Which `eval` snippets did I write? For each one, strip out everything specific to this project
->    (the scene names, the game's own component types, the layer and tag conventions, the art
->    layout) and ask: **is there anything left?** If the snippet collapses into "find these
->    particular objects in this particular project", it is not a macro. It is a one-off, and
->    turning it into a macro pollutes the shared set for every other project. Discard it.
-> 2. What survives is a shape, not a task: a *kind* of query, filter, digest, audit or bulk edit
->    that any Unity project could need, expressed purely in terms of engine and Editor concepts
->    (GameObjects, components, serialized properties, prefabs, assets, materials, the console, the
->    asset database). Would a session six months from now, in a project I have never seen, plausibly
->    reach for it?
-> 3. Which existing `m_` macro almost did the job? A missing argument, a filter that doesn't exist,
->    output I had to post-process, a result too fat or too lossy? **Improving an existing macro
->    beats adding a new one**, because it costs the shared set nothing in surface area.
-> 4. What did I get wrong on the first try because the tooling misled me? A guessed argument name,
->    an assumed default, output in an unexpected shape? Sometimes the fix is a doc line in
->    `references/talk-to-editor.md`, not code.
->
-> Constraints, hard: **You can either edit one of the existing macros, OR create a new macro.** 
-> They go into a library shared by every project on this machine, so a macro that only pays off
-> here is a net negative. Nothing that hardcodes a path, name, type or convention from this project.
-> Nothing that depends on a package this project happens to have: resolve optional types
-> reflectively and return a clean `ERR` token when they are absent. If a candidate needs
-> "…for projects that use X" to justify it, it is not general enough.
+Otherwise this step applies, but only when `<home>/settings.local.json` has `"contribute": true`. If
+`contribute` is false, stop here, leave the changes uncommitted, and just say which files you added or
+edited.
 
-Report the outcome to the user in a few lines: what you'd add or change and why, or that the
-existing set covered the work.
-
----
-
-## Step 8: Implement the macros (if any survived step 7)
-
-Write them into **`C:/unity-cli-skill/macros/`**, the permanent library, never `<skill>/macros/`,
-where they would vanish with the session. Follow *Writing a macro* in
-`references/talk-to-editor.md`: `m_` command prefix, `M_` class prefix, one compact single-line
-return string. Then recompile and verify with the poll loop from step 4, and actually call the new
-macro once to confirm it answers.
-
-A macro that was never invoked successfully does not count as done, and must not be pushed.
-
----
-
-## Step 9: Open a pull request (only if `contribute` is true)
-
-Only when `<home>/settings.local.json` has `"contribute": true` **and** step 8 changed something
-under `C:/unity-cli-skill/`. If `contribute` is false, stop here, leave the changes uncommitted, and
-just say which files you added or edited.
+Before pushing anything: a macro that was never invoked successfully does not count as done. If you
+wrote or edited a macro during step 6 but never got a real answer out of it, fix or revert it now —
+do not push it.
 
 **Nobody has write access to the shared repo.** Contributions go through the user's own fork and a
 pull request. `upstream` is the shared repo and is never pushed to; `origin` is the user's fork.
 
-**9a. Get the fork.** Read `"fork"` from `<home>/settings.local.json`; if it isn't recorded, check
+**7a. Get the fork.** Read `"fork"` from `<home>/settings.local.json`; if it isn't recorded, check
 `git -C "C:/unity-cli-skill" remote -v` for an `origin`. If neither exists, ask the user for it with
 one free-text question: they fork <https://github.com/itsdevlogger/unity-cli-skill> on GitHub and
-paste the URL of *their* fork. Say that you'll push a branch there and hand back a PR link, and that
-nothing goes near the shared repo.
+paste the URL of *their* fork. Say that you'll push a branch there and then check with them before
+opening the PR, and that nothing goes near the shared repo.
 
 If they'd rather not, or don't have a fork: stop. Leave the changes on disk, say which files you
 added or edited, and move on. This is not a failure.
@@ -254,7 +227,7 @@ git -C "C:/unity-cli-skill" remote add origin <fork-url>
 Add `"fork": "<fork-url>"` to `<home>/settings.local.json`, keeping the existing keys. If `origin`
 already exists but points somewhere else, use `remote set-url origin <fork-url>` instead.
 
-**9b. If step 1a fell back to a copy**, `<home>` has no git at all. Adopt it as a working copy first,
+**7b. If step 1a fell back to a copy**, `<home>` has no git at all. Adopt it as a working copy first,
 without disturbing the files on disk:
 
 ```bash
@@ -265,30 +238,65 @@ That upstream URL is fixed, so use it verbatim and don't ask the user for one. `
 `--hard` adopts the remote history while leaving every file exactly as it is, so your new macro shows
 up as a normal change.
 
-**9c. Branch, commit, push to the fork:**
+**7c. Commit on `main`, push a branch to the fork without checking one out.** A PR does need its own
+branch, so that each macro can be reviewed and merged on its own — but that branch only has to exist
+*on the fork*. The `HEAD:refs/heads/…` form creates it remotely and leaves the working tree untouched:
 
 ```bash
-git -C "C:/unity-cli-skill" checkout -b macro/<short-name> && git -C "C:/unity-cli-skill" add -A && git -C "C:/unity-cli-skill" commit -m "<message>" && git -C "C:/unity-cli-skill" push -u origin HEAD
+git -C "C:/unity-cli-skill" add -A && git -C "C:/unity-cli-skill" commit -m "<message>" && git -C "C:/unity-cli-skill" push origin HEAD:refs/heads/macro/<short-name>
 ```
 
-Use a branch, never `main`: a PR needs one, and it keeps `main` fast-forwardable so the next
-session's auto-update still works. **Switch back with `git -C "C:/unity-cli-skill" checkout main`
-once the push succeeds**, or step 1c will fail next run.
+**Never `checkout -b` and never switch back to `main` afterwards.** That is what the invariant at the
+top forbids: switching away takes the macro off disk, and the user is left holding a PR link for a
+macro that no longer exists in any of their projects. No local branch is created here, so there is
+nothing to switch back from and no branch pileup to clean up.
 
-**9d. Hand back the PR link.** The push output ends with a `Create a pull request for …` URL, so
-relay that verbatim. If it isn't there, build it: `<fork-url>/pull/new/macro/<short-name>`. Say in
-one line what the PR would add, so the user knows what they're opening. Opening it is theirs to do,
-so don't attempt it, and don't ask them to grant you access.
+Before pushing, check what the branch will actually carry:
+
+```bash
+git -C "C:/unity-cli-skill" log --oneline upstream/main..HEAD
+```
+
+If that lists more than the commit you just made, earlier contributions haven't been merged upstream
+yet and will ride along in this PR. Don't try to untangle it — name them to the user in one line and
+carry on.
+
+**7d. Open the pull request.** Opening a PR against the shared repo is public and outward-facing, so
+ask first: say in one line what the PR adds and that it targets `itsdevlogger/unity-cli-skill`, and
+wait for a clear yes. Then, if `gh auth status` is clean, open it yourself:
+
+```bash
+gh pr create --repo itsdevlogger/unity-cli-skill --head <fork-owner>:macro/<short-name> --title "<title>" --body "<what it adds and why>"
+```
+
+If `gh` is missing or unauthenticated, fall back to relaying the link: the push output ends with a
+`Create a pull request for …` URL, so pass that back verbatim, or build it as
+`<fork-url>/pull/new/macro/<short-name>`. Don't ask the user to grant you access to anything.
+
+**7e. Tidy up merged branches, if it's free.** Fork branches are never deleted automatically — not on
+merge (the upstream maintainers have no write access to the user's fork) and never on a closed PR. They
+are harmless, so this is optional and must never fail the contribution. When `gh` is available, dead
+branches from previously merged PRs can go:
+
+```bash
+git -C "C:/unity-cli-skill" push origin --delete macro/<short-name>
+```
+
+Only for PRs that are already merged or closed, and only branches this skill created (`macro/…`).
+Never delete a branch with an open PR, and don't spend a round trip hunting for candidates.
 
 Rules that hold throughout:
 
 - Commit **only** the macro library. Never touch the user's Unity project's git state, and never try
   to commit `<skill>`, which is a throwaway copy.
-- Check `git -C "C:/unity-cli-skill" status --porcelain` before committing and look at what's staged.
-  If files unrelated to your macro work show up, name them to the user instead of quietly shipping
-  them. `settings.local.json` is gitignored and must stay that way, because it's per-machine.
+- Look at what the `status --porcelain` above actually listed before committing. If files unrelated to
+  your macro work show up, name them to the user instead of quietly shipping them.
+  `settings.local.json` is gitignored and must stay that way, because it's per-machine.
 - Message names the macro and the capability, not the project it came from, as in `Add
   m_find_missing_refs: report broken object references in a scene`. The repo is shared, so "for the
   Foo prototype" means nothing to the next reader.
-- If the push is rejected (bad URL, no auth, fork moved ahead), the commit still exists locally, so
-  say so in one line and move on. Don't force-push.
+- If the push is rejected (bad URL, no auth, that branch name already taken by an older push), the
+  commit still exists locally and the macro is still on disk and working, so say so in one line and
+  move on. Don't force-push. A name collision just needs a different `<short-name>`.
+- The fork's own `main` is never pushed to; it stays a clean mirror of upstream. Local `main` carrying
+  unmerged commits is expected and is what step 1c's rebase is for.

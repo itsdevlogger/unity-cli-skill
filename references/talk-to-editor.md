@@ -318,8 +318,17 @@ appears, the compile failed: `unity command m_find_logs --grep "error CS" --sev 
 
 The `m_` set is meant to get better with use. Notice friction as you work: an argument you had to
 guess, output you had to post-process, a filter that didn't exist and forced an `eval`, a result too
-fat or too lossy to use. Note it at the time — those observations evaporate once the task succeeds.
-Step 7 of `SKILL.md` is where they get cashed in.
+fat or too lossy to use. Act on it *there and then*, while the friction is in front of you — **improving
+an existing macro beats adding a new one**, because it costs the shared set nothing in surface area.
+Sometimes the fix is a doc line in this file rather than code.
+
+Only if it passes the generality test: strip out everything specific to this project (scene names, the
+game's own component types, layer and tag conventions, the art layout) and ask whether anything is
+left. If it collapses into "find these particular objects in this particular project", it's a one-off —
+`eval` it and move on. What justifies a macro is a *shape*: a kind of query, filter, digest, audit or
+bulk edit, expressed purely in engine and Editor concepts, that a session six months from now in a
+project you've never seen would plausibly reach for. If a candidate needs "…for projects that use X"
+to justify it, it isn't general enough.
 
 Keep the scope honest: an `m_` macro can be changed, but a built-in can't, so a complaint about a
 built-in is only actionable as "wrap it in a new `m_` macro".
