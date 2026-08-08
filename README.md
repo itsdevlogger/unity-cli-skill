@@ -1,3 +1,9 @@
+[Email](mailto:thevaishnavchincholkar@gmail.com) · [LinkedIn](https://www.linkedin.com/in/vaishnav-chincholkar) · [Asset Store](https://assetstore.unity.com/publishers/105229)
+
+More tools like this one: **[itsdevlogger.github.io](https://itsdevlogger.github.io/)**
+
+---
+
 # unity-cli: a Claude skill for driving the Unity Editor
 
 Lets Claude inspect and edit an **already-existing** Unity project by talking to your **running Unity
