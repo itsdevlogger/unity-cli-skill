@@ -1,6 +1,6 @@
 [Email](mailto:thevaishnavchincholkar@gmail.com) · [LinkedIn](https://www.linkedin.com/in/vaishnav-chincholkar) · [Asset Store](https://assetstore.unity.com/publishers/105229)
 
-More tools like this one: **[itsdevlogger.github.io](https://itsdevlogger.github.io/)**
+More tools like this one: **[thevaishnav.github.io](https://thevaishnav.github.io/)**
 
 ---
 
