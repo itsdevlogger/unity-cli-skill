@@ -376,6 +376,11 @@ than trusting the success flag — this is a two-command operation, not one. Han
 **Find before you dump.** `find_gameobjects` (filter by name/tag/component type) returns just the
 matches; `m_scene_digest --filter` covers the substring case it can't. Never `get_scene_hierarchy`.
 
+`find_assets` takes `--type` / `--name` / `--label` and rejects the call outright if all three are
+missing — there is no `--filter` argument, despite `filter` appearing in its *output*. For material
+work reach for `m_material_audit` instead: it already excludes the ~70 package and engine materials
+that `find_assets --type Material` returns alongside the project's own.
+
 **Destructive macros refuse by default.** Anything that deletes, clears, overwrites, or changes
 project settings requires `confirm true`. Many also accept `dry_run true` — use it to preview a
 bulk or irreversible change, and show the user that preview when the change is broad or hard to
@@ -398,6 +403,24 @@ probably was.
 then any later mutation in the same snippet re-dirties the scene, so the save you were told happened
 didn't cover the change you cared about. Mark the scene dirty in the eval, then `save_scene` as the
 *next* command, then `list_open_scenes` to confirm.
+
+**Don't call `AssetDatabase.Refresh()` in the same `eval` that writes material properties.** The
+refresh kicks off a shader/asset reimport that re-initialises materials *after* your `SetFloat` /
+`SetColor` calls, so the writes are silently discarded — `SaveAssets` then persists the old values and
+the command still reports success. Do the refresh in one command and the property writes in the
+*next* one. Read a value back to confirm; a property that came back at its shader default rather
+than what you set is this bug, not a bad property name.
+
+**`Material.shader` cannot be assigned on a Material Variant.** It throws `Trying to set shader on a
+Material Variant` and that material keeps its old shader while the rest of a bulk retarget succeeds —
+a partial conversion that looks complete. A variant inherits its parent's shader, so retarget the
+*parent* and the variants follow. `m_material_audit --detail true` reports a `v` field naming the
+parent for exactly this reason.
+
+**Give `eval` a real timeout for AssetDatabase sweeps.** The 5000 ms default is not enough to walk
+`FindAssets("t:Material")` and load every hit on a normal project; it fails with `Main thread
+operation timed out after 5000ms`, which reads like a hang rather than a timeout. Pass
+`--timeout 25000` for anything that loads assets in a loop.
 
 **Keep the user's undo working.** In `eval`, go through `UnityEditor.Undo` (`Undo.RecordObject`,
 `Undo.AddComponent`, `Undo.DestroyObjectImmediate`) instead of raw `Object.DestroyImmediate` /
