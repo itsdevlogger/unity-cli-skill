@@ -243,6 +243,60 @@ exist in a Cinemachine 3 project, it's `Unity.Cinemachine.CinemachineVirtualCame
 `eval` compiles against **every loaded assembly**, so a type this macro can find is always reachable;
 only the qualification is ever the problem. Runs off the main thread, so it answers during a compile.
 
+It answers *what a type is called*, not *where it is written*. A compiled type carries no source
+path, so the moment you need to read or edit the declaration, switch to `m_find_type`.
+
+### `m_find_type` — where a type is declared
+
+```bash
+unity command m_find_type --q "PlayerController|IDamageable"
+unity command m_find_type --q Inventory --kind interface --root "Assets/Scripts" --code -1
+```
+
+Returns, per name, every declaration found: full name, kind, **file path and line**, assembly, and the
+signature including the base list. `code` adds the source itself — `-1` for the whole declaration
+through its closing brace, `N` for the first N lines.
+
+| Arg | Default | What it does |
+|---|---|---|
+| `q` | — | Type names, **separated by `\|`**. Several at once; each gets its own result group. |
+| `kind` | all | `class`, `struct`, `interface`, `enum`, `record`, `delegate`. Multiple with `\|`. |
+| `root` | `Assets` | `Assets`, `Packages`, `Library` (the package cache), `all`, or any folder path. Multiple with `\|`. |
+| `asm` | all | Keep only files compiling into matching assemblies, resolved from the nearest `.asmdef`. Multiple with `\|`. |
+| `code` | `0` | `0` signature only, `-1` whole declaration, `N` first N lines. |
+| `m` | `10` | Max declarations per name. |
+
+**Use this instead of grepping for `class Foo`.** It parses the source rather than matching lines, so
+a hit is always a real declaration — never a call site, a `///` comment, or the `class` in
+`where T : class`. An exact name match suppresses the substring pile, so `--q Health` returns `Health`
+and not also `HealthBar` and `HealthPickup`; substring matching only kicks in when nothing matches
+exactly. It reports each half of a `partial` separately, which reflection cannot do, and it runs off
+the main thread and reads files directly — so it still works **while the project is failing to
+compile**, which is when this question usually comes up.
+
+### `m_find_member` — where a method, property or field is declared
+
+```bash
+unity command m_find_member --q "TakeDamage|maxHealth"
+unity command m_find_member --q Update --type PlayerController --code -1
+```
+
+Same shape as `m_find_type`, and the same `root`, `asm`, `code` and `m` arguments. Per name it returns
+the member's kind, **the declaring type's full name**, file path and line, and the full signature with
+modifiers and parameters.
+
+| Arg | Default | What it does |
+|---|---|---|
+| `q` | — | Member names, separated by `\|`. |
+| `kind` | all | `method`, `property`, `field`, `event`, `constructor`, `indexer`, `operator`, `finalizer`, `enum`. |
+| `type` | all | Only members declared by types whose name contains this. Use it when several classes declare the same name. |
+
+This is the one grep is worst at: `grep TakeDamage` returns every call site, every comment and every
+local alongside the single declaration you wanted. Here the distinction is structural — a member is
+only reported when it sits at its type body's own brace depth — so **locals inside methods are never
+reported as fields and calls are never reported as methods**. Enum values count as members, so a
+stray `PropertyKey.Foo` is findable too.
+
 ### `screenshot` — look at the result
 
 ```bash
@@ -375,6 +429,14 @@ than trusting the success flag — this is a two-command operation, not one. Han
 
 **Find before you dump.** `find_gameobjects` (filter by name/tag/component type) returns just the
 matches; `m_scene_digest --filter` covers the substring case it can't. Never `get_scene_hierarchy`.
+
+**Don't grep for a declaration.** Reaching for the `Grep` tool to find where a class, method, field or
+property is written costs two or three round trips — candidate lines, then enough context around each
+to tell a declaration from a call site or a comment — and still misses declarations whose modifiers
+sit on the previous line. `m_find_type` and `m_find_member` answer it in one call, with the file, the
+line, the declaring type and the signature, because they parse the source instead of matching it. Both
+take several names at once, so a batch is one call too. Grep is still the right tool for finding
+*usages* — that is the question these two deliberately do not answer.
 
 `find_assets` takes `--type` / `--name` / `--label` and rejects the call outright if all three are
 missing — there is no `--filter` argument, despite `filter` appearing in its *output*. For material
