@@ -83,14 +83,30 @@ docs](https://docs.unity.com/en-us/unity-production-pipeline/local-tools-cli/uni
 GitHub page. Contributions go through your fork (see [Contributing](#contributing)), and having it up
 front saves a detour later. Skip it if you just want to use the skill.
 
-**Download it:** `Code ▸ Download ZIP` on GitHub, from your fork or from this repo, since the contents
-are the same.
+**Clone it to `C:\unity-cli-skill`**, from your fork or from this repo, since the contents are the
+same. The path matters: the skill hardcodes it for the shared macro library.
 
-**Then install the ZIP as a skill:**
+```bash
+git clone https://github.com/itsdevlogger/unity-cli-skill C:/unity-cli-skill
+```
 
-*Claude Desktop / Cowork:* open Settings, find the Skills section, and upload the ZIP.
+**Then double-click `install.bat`.** It lists the agents it can find on your machine and asks which
+ones to install for. Pick them, and it's done.
 
-Restart Claude, then ask for something Unity-shaped. The skill triggers on its own.
+The installer doesn't copy anything. It creates a directory junction from each agent's skills folder
+back to this clone, so the repo stays the single source of truth: `git pull` here and every agent
+sees the new version immediately, with nothing to reinstall.
+
+Prefer the command line, or scripting it?
+
+```bash
+powershell -ExecutionPolicy Bypass -File install.ps1 -Agents claude,cursor
+```
+
+Add `-Force` to replace something already sitting in that folder, or `-Uninstall` to remove the
+junctions again. Uninstalling only removes the links; your clone is never touched.
+
+Restart your agent, then ask for something Unity-shaped. The skill triggers on its own.
 
 ---
 
@@ -131,6 +147,7 @@ that's the expected outcome.
 | | |
 |---|---|
 | `SKILL.md` | The instructions Claude follows: setup, the seven steps, the contribution flow. |
+| `install.bat` / `install.ps1` | The installer. Junctions this clone into the skills folder of whichever agents you pick. Double-click the `.bat`, or call the `.ps1` with `-Agents`. |
 | `macros/` | The shared `m_*` macro library, a Unity UPM package (`com.unitycli.macros`) that gets linked into each project. Compact, token-cheap commands for searching, digesting and auditing a project. |
 | `references/talk-to-editor.md` | The operating manual: addressing objects, which macros to prefer, `eval` rules, how to write a macro. |
 | `references/eval-cookbook.md` | Working C# snippets for running through `eval`. |
