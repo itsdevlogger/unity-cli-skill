@@ -297,6 +297,100 @@ only reported when it sits at its type body's own brace depth — so **locals in
 reported as fields and calls are never reported as methods**. Enum values count as members, so a
 stray `PropertyKey.Foo` is findable too.
 
+### `m_outline` — the shape of a type, without its bodies
+
+```bash
+unity command m_outline --q PlayerController
+unity command m_outline --q Health --inherited 1 --kind "method|property"
+unity command m_outline --f Assets/Scripts/Boss.cs
+```
+
+**Reach for this before reading any unfamiliar file.** A 900-line MonoBehaviour costs 900 lines to
+learn that it has eleven members; this answers the same question in a few dozen. Returns the type's
+kind, base list, the file's usings, and every member in source order with its kind, signature, line —
+and `len`, the number of lines the member spans.
+
+`len` is half the value: it says which member is the four-line accessor and which is the 200-line
+state machine, so you decide what to read *before* paying for it. Then `m_find_member --code`, or
+`Read` at the line, for the one you actually want.
+
+| Arg | Default | What it does |
+|---|---|---|
+| `q` | — | Type names, separated by `\|`. Omit when passing `f`. |
+| `f` | — | Outline every type in this file instead of searching by name. |
+| `kind` | all | Member kinds to keep, same vocabulary as `m_find_member`. With this set, types contributing no members are dropped. |
+| `root` / `asm` | `Assets` / all | As `m_find_type`. |
+| `inherited` | `0` | `1` also walks base types **found in source** and lists their members, each marked `from` with the declaring type. |
+| `m` | `60` | Max members per type. Prefer narrowing with `kind` — a low `m` on a Unity class returns nothing but serialized fields. |
+
+`inherited` earns its keep here more than it would elsewhere: a gameplay class is routinely three deep
+and half its usable surface sits on a base you'd otherwise have to find and outline separately. It
+stops where the engine starts — `MonoBehaviour` has no source to read, so a class deriving straight
+from it gains nothing and says so by returning nothing extra.
+
+### `m_refs` — where a name is *used*
+
+```bash
+unity command m_refs --q TakeDamage
+unity command m_refs --q Reset --type EnemyAI --kind call --ctx 2
+```
+
+The inverse of the two above. Per hit: file, line, the enclosing type, **the enclosing member**, how
+the name is used, and the receiver written before it.
+
+`in` is the point. Grep hands back a flat list of line numbers; this hands back *"`TakeDamage` is
+called from `Bullet.OnHit`, `Explosion.Tick`, `EnemyAI.Attack`"* — four facts instead of a forty-line
+dump.
+
+| Arg | Default | What it does |
+|---|---|---|
+| `q` | — | Names, separated by `\|`. |
+| `type` | all | Narrow by the **receiver** written at the use site: `--type enemy` keeps `enemy.Reset()` and `_enemy.Reset()`. A use with no receiver is kept when the type containing it matches instead, so a class's calls to its own member survive. |
+| `kind` | all | `call`, `read`, `write`, `new`, `type`, `inherit`, `decl`, `yaml`. |
+| `decl` | `0` | `1` also reports the declaration itself, as `k=decl`. |
+| `yaml` | `1` | Scan scene/prefab/asset YAML too. `0` skips it. |
+| `ctx` | `0` | Lines of source either side of each hit. |
+| `m` | `25` | Max uses per name. |
+
+**It sees scene wiring, which no code search can.** A method invoked only from a UnityEvent on a
+prefab has no caller anywhere in source, so grep says it's dead — and deleting it breaks a scene
+silently. Those hits come back as `k=yaml` with the YAML key and a per-file count. On a real project
+this is not a corner case: `ReturnToDefaultLayout` in the test project has **19 wirings across 6
+scenes and prefabs, and zero source uses.** Never conclude a method is unused without checking this.
+
+**It is name-based, not semantic**, and says so in its own legend. No overload resolution, no type
+inference: two unrelated classes declaring `Reset` both answer to `--q Reset`, and `k` is inferred
+from surrounding punctuation, with `read` as the catch-all. Narrow with `type` and `asm`. It's a very
+good approximation, not a compiler's answer — treat it that way and it won't mislead you.
+
+### `m_hierarchy` — derived types and implementors
+
+```bash
+unity command m_hierarchy --q IInteractable
+unity command m_hierarchy --q Enemy --dir both
+unity command m_hierarchy --q BaseWeapon --dir down --depth 1
+```
+
+| Arg | Default | What it does |
+|---|---|---|
+| `q` | — | Type names, separated by `\|`. |
+| `dir` | `down` | `down` = types deriving from or implementing it; `up` = the ancestor chain; `both`. |
+| `depth` | `-1` (all) | Transitive levels. `1` returns only direct relationships. |
+| `root` / `asm` / `m` | `Assets` / all / `40` | As above. |
+
+Grep for `: Enemy` and you get base lists mixed with ternaries and dictionary initialisers, and
+nothing transitive — a class extending a class extending `Enemy` stays invisible. Here the base list
+is parsed, the walk is transitive, and `via` names the intermediate link.
+
+The real use is the **pre-flight check before touching a base class or a virtual signature**: one call
+tells you everything that breaks. Also answers "what implements `IInteractable`" and "what are all the
+`ScriptableObject` configs".
+
+Two honest limits, both in the legend: matching is by **simple name**, so two same-named types in
+different namespaces aren't told apart; and source can't say which base-list entry is the class and
+which are interfaces, so "derives from" covers extending and implementing alike. A base outside the
+searched roots — `MonoBehaviour`, anything precompiled — ends the chain there.
+
 ### `screenshot` — look at the result
 
 ```bash
@@ -435,8 +529,31 @@ property is written costs two or three round trips — candidate lines, then eno
 to tell a declaration from a call site or a comment — and still misses declarations whose modifiers
 sit on the previous line. `m_find_type` and `m_find_member` answer it in one call, with the file, the
 line, the declaring type and the signature, because they parse the source instead of matching it. Both
-take several names at once, so a batch is one call too. Grep is still the right tool for finding
-*usages* — that is the question these two deliberately do not answer.
+take several names at once, so a batch is one call too.
+
+**Don't grep for C# at all, in fact.** Five macros now cover the whole question, each in one call, each
+taking a batch of names, and all five parse the source rather than matching lines:
+
+| Question | Macro |
+|---|---|
+| What is this type *called* (namespace, assembly)? | `m_type_info` |
+| Where is this type *declared*? | `m_find_type` |
+| Where is this member *declared*? | `m_find_member` |
+| What's *in* this type? What should I read? | `m_outline` |
+| Where is this name *used*? | `m_refs` |
+| What derives from / implements this? | `m_hierarchy` |
+
+All of them read files directly and run off the main thread, so they keep working **while the project
+is failing to compile** — which is when most of these questions get asked.
+
+Keep `Grep` for what it's actually better at: text that isn't C# declarations or identifiers — shader
+code, JSON and YAML by shape rather than by wired name, `.asmdef` contents, log files, arbitrary
+substrings and regexes across mixed file types.
+
+**Never call a member dead without `m_refs`.** A method reached only from a UnityEvent on a prefab or a
+scene has no caller in source, so every code-only search — grep included — reports it as unused.
+`m_refs` scans scene, prefab and asset YAML alongside the code and returns those as `k=yaml`. Deleting
+a method on grep's word breaks a scene and nothing reports the break.
 
 `find_assets` takes `--type` / `--name` / `--label` and rejects the call outright if all three are
 missing — there is no `--filter` argument, despite `filter` appearing in its *output*. For material

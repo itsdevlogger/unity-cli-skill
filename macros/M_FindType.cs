@@ -89,39 +89,9 @@ namespace UnityCliMacros
             }
 
             var filesScanned = 0;
-            var capped = false;
 
-            foreach (var path in CSharpHelper.EnumerateSources(roots))
+            var capped = CSharpHelper.WalkFiles(roots, names, assemblies, FILE_CAP, ref filesScanned, file =>
             {
-                if (filesScanned >= FILE_CAP)
-                {
-                    capped = true;
-                    break;
-                }
-
-                filesScanned++;
-
-                string text;
-
-                if (!CSharpHelper.TryRead(path, out text))
-                {
-                    continue;
-                }
-
-                // Masking and parsing a file is the expensive part, so it only happens for files whose
-                // raw text mentions one of the names at all
-                if (!MentionsAny(text, names))
-                {
-                    continue;
-                }
-
-                if (!CSharpHelper.MatchesAny(CSharpHelper.AssemblyOf(path), assemblies))
-                {
-                    continue;
-                }
-
-                var file = CSharpHelper.Load(path, text);
-
                 foreach (var declaration in CSharpHelper.ParseTypes(file))
                 {
                     if (!CSharpHelper.MatchesAny(declaration.kind, kinds))
@@ -139,7 +109,7 @@ namespace UnityCliMacros
                         }
                     }
                 }
-            }
+            });
 
             return Format(names, hits, max, code, capped, filesScanned, missingRoots);
         }
@@ -160,19 +130,6 @@ namespace UnityCliMacros
             }
 
             return name.IndexOf(needle, System.StringComparison.OrdinalIgnoreCase) >= 0 ? 1 : 0;
-        }
-
-        private static bool MentionsAny(string text, string[] names)
-        {
-            foreach (var name in names)
-            {
-                if (text.IndexOf(name, System.StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    return true;
-                }
-            }
-
-            return false;
         }
 
         private static string Format(string[] names, List<Hit>[] hits, int max, int code, bool capped, int filesScanned, List<string> missingRoots)

@@ -169,6 +169,18 @@ Notes that save real time:
 - `TIMEOUT` means either the Editor was never focused, or the macros failed to compile. Check with
   `unity command m_find_logs --grep "error CS" --sev error`, because that macro answers off the main
   thread, so it works mid-compile.
+- **`recompile` answering `{"status":"up_to_date"}` after you added or edited a macro means the Editor
+  hasn't noticed the file yet**, not that your change is already live. `<home>/macros` is a local UPM
+  package outside `Assets/`, and an unfocused Editor may not pick up writes there on its own. Force the
+  import once, then recompile:
+
+  ```bash
+  unity command eval --code "UnityEditor.AssetDatabase.Refresh(); return 1.ToString();"
+  ```
+
+  That `eval` usually returns `Main thread operation timed out after 5000ms` — the refresh is slower
+  than the eval timeout. **Ignore it; the import still happens.** Send `recompile` after it and you'll
+  get `{"status":"compiling"}`. Subsequent edits in the same session recompile normally.
 - Use this same loop, with the new command name substituted into both the `--q` and the regex,
   every time you add or edit a macro later on.
 

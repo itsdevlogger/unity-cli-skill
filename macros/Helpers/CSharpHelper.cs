@@ -71,6 +71,12 @@ namespace UnityCliMacros
             @"(?<![\w.])namespace\s+([\w.]+)\s*([;{])",
             RegexOptions.Compiled);
 
+        // Anchored on a semicolon with nothing but a qualified name (or an alias) in between, which is
+        // what keeps a `using` *statement* or a C# 8 `using var x = …;` from matching
+        private static readonly Regex USING_PATTERN = new Regex(
+            @"(?<![\w.])using\s+(static\s+)?([A-Za-z_][\w.]*(?:\s*=\s*[A-Za-z_][\w.<>,\[\]\s]*?)?)\s*;",
+            RegexOptions.Compiled);
+
         private static readonly Regex ASMDEF_NAME_PATTERN = new Regex(
             "\"name\"\\s*:\\s*\"([^\"]+)\"",
             RegexOptions.Compiled);
@@ -121,7 +127,14 @@ namespace UnityCliMacros
             public string display;
             public string ns;
             public string outer;
+
+            /// Base class and interfaces exactly as written, `where` clauses excluded. Source has no way
+            /// to say which entry is the class and which are interfaces — that needs the compiled type —
+            /// so anything reading this has to treat the list as unordered.
+            public string[] bases;
+
             public int declStart;
+            public int nameOffset;
             public int headEnd;
             public int bodyStart;
             public int bodyEnd;
@@ -153,8 +166,20 @@ namespace UnityCliMacros
             public string kind;
             public string name;
             public int declStart;
+
+            /// Offset of the name itself, which is what tells a declaration apart from a use of the same
+            /// name elsewhere in the same declaration head — `void Spawn(Enemy e)` holds both
+            public int nameOffset;
+
             public int headEnd;
             public int declEnd;
+        }
+
+        /// One type declaration together with the file it was found in
+        public struct TypeHit
+        {
+            public SourceFile file;
+            public TypeDecl declaration;
         }
 
         // ------------------------------------------------------------------ masking
@@ -333,6 +358,10 @@ namespace UnityCliMacros
                 var bodyStart = IndexOfBody(masked, afterGenerics);
                 var bodyEnd = bodyStart < 0 ? -1 : MatchBrace(masked, bodyStart);
 
+                // A positional record has no body, and its parameter list is the whole declaration, so
+                // the head has to run to the semicolon rather than stopping at the name
+                var headEnd = bodyStart < 0 ? HeadEnd(masked, afterGenerics) : bodyStart;
+
                 declarations.Add(new TypeDecl
                 {
                     kind = kind,
@@ -340,11 +369,10 @@ namespace UnityCliMacros
                     display = name + GenericSuffix(masked, nameEnd, afterGenerics),
                     ns = NamespaceAt(namespaces, match.Index),
                     outer = string.Empty,
+                    bases = ParseBases(file.text, masked, afterGenerics, headEnd),
                     declStart = DeclarationStart(masked, match.Index),
-
-                    // A positional record has no body, and its parameter list is the whole declaration,
-                    // so the head has to run to the semicolon rather than stopping at the name
-                    headEnd = bodyStart < 0 ? HeadEnd(masked, afterGenerics) : bodyStart,
+                    nameOffset = match.Groups[2].Index,
+                    headEnd = headEnd,
                     bodyStart = bodyStart,
                     bodyEnd = bodyEnd
                 });
@@ -369,7 +397,9 @@ namespace UnityCliMacros
                     display = name + GenericSuffix(masked, nameEnd, afterGenerics),
                     ns = NamespaceAt(namespaces, match.Index),
                     outer = string.Empty,
+                    bases = new string[0],
                     declStart = DeclarationStart(masked, match.Index),
+                    nameOffset = match.Groups[1].Index,
                     headEnd = IndexOrEnd(masked, afterGenerics, ';'),
                     bodyStart = -1,
                     bodyEnd = -1
@@ -407,6 +437,254 @@ namespace UnityCliMacros
             }
 
             return declarations;
+        }
+
+        /// The base class and interfaces between a type's name and its body, `where` clauses excluded.
+        ///
+        /// The two traps are both colons. `class Foo<T> where T : class` has no base list at all, and a
+        /// positional record puts its parameter list where the base list would start — so the leading
+        /// `(…)` is skipped and a `where` seen before any top-level colon means there is nothing here.
+        private static string[] ParseBases(string text, string masked, int cursor, int end)
+        {
+            if (end > masked.Length)
+            {
+                end = masked.Length;
+            }
+
+            cursor = SkipSpace(masked, cursor, end);
+
+            if (cursor >= end)
+            {
+                return new string[0];
+            }
+
+            if (masked[cursor] == '(')
+            {
+                var close = MatchPair(masked, cursor, end, '(', ')');
+
+                if (close < 0)
+                {
+                    return new string[0];
+                }
+
+                cursor = close + 1;
+            }
+
+            var colon = -1;
+            var depth = 0;
+
+            for (var i = cursor; i < end; i++)
+            {
+                var c = masked[i];
+
+                if (c == '<' || c == '(' || c == '[')
+                {
+                    depth++;
+                    continue;
+                }
+
+                if (c == '>' || c == ')' || c == ']')
+                {
+                    depth--;
+                    continue;
+                }
+
+                if (depth != 0)
+                {
+                    continue;
+                }
+
+                if (c == ':')
+                {
+                    colon = i;
+                    break;
+                }
+
+                if (IsWordAt(masked, i, "where"))
+                {
+                    return new string[0];
+                }
+            }
+
+            if (colon < 0)
+            {
+                return new string[0];
+            }
+
+            var stop = end;
+            depth = 0;
+
+            for (var i = colon + 1; i < end; i++)
+            {
+                var c = masked[i];
+
+                if (c == '<' || c == '(' || c == '[')
+                {
+                    depth++;
+                    continue;
+                }
+
+                if (c == '>' || c == ')' || c == ']')
+                {
+                    depth--;
+                    continue;
+                }
+
+                if (depth == 0 && IsWordAt(masked, i, "where"))
+                {
+                    stop = i;
+                    break;
+                }
+            }
+
+            var bases = new List<string>();
+            var segmentStart = colon + 1;
+            depth = 0;
+
+            for (var i = colon + 1; i <= stop; i++)
+            {
+                if (i < stop)
+                {
+                    var c = masked[i];
+
+                    if (c == '<' || c == '(' || c == '[')
+                    {
+                        depth++;
+                        continue;
+                    }
+
+                    if (c == '>' || c == ')' || c == ']')
+                    {
+                        depth--;
+                        continue;
+                    }
+
+                    if (c != ',' || depth != 0)
+                    {
+                        continue;
+                    }
+                }
+
+                AddBase(bases, text, segmentStart, i);
+                segmentStart = i + 1;
+            }
+
+            return bases.ToArray();
+        }
+
+        private static void AddBase(List<string> bases, string text, int start, int end)
+        {
+            if (end > text.Length)
+            {
+                end = text.Length;
+            }
+
+            if (start >= end)
+            {
+                return;
+            }
+
+            var sb = new StringBuilder();
+
+            for (var i = start; i < end; i++)
+            {
+                var c = text[i];
+
+                if (!char.IsWhiteSpace(c))
+                {
+                    sb.Append(c);
+                }
+            }
+
+            var value = sb.ToString();
+
+            // `record Foo(int X) : Base(X)` names its base with a constructor call; the arguments are
+            // not part of the type's name
+            var paren = value.IndexOf('(');
+
+            if (paren > 0)
+            {
+                value = value.Substring(0, paren);
+            }
+
+            if (value.Length > 0)
+            {
+                bases.Add(value);
+            }
+        }
+
+        /// A base-list entry reduced to the name a declaration elsewhere would match:
+        /// `System.Collections.Generic.IList&lt;Foo&gt;` becomes `IList`
+        public static string SimpleTypeName(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            var generic = value.IndexOf('<');
+
+            if (generic >= 0)
+            {
+                value = value.Substring(0, generic);
+            }
+
+            var dot = value.LastIndexOf('.');
+
+            return dot >= 0 ? value.Substring(dot + 1) : value;
+        }
+
+        /// The file's `using` directives, aliases and `using static` included. A `using` *statement*
+        /// (`using (var x = …)`) cannot match, because the pattern requires a semicolon with nothing but
+        /// a qualified name in between.
+        public static string[] ParseUsings(SourceFile file)
+        {
+            var usings = new List<string>();
+
+            foreach (Match match in USING_PATTERN.Matches(file.masked))
+            {
+                var value = match.Groups[1].Value.Length > 0
+                    ? "static " + match.Groups[2].Value.Trim()
+                    : match.Groups[2].Value.Trim();
+
+                if (!usings.Contains(value))
+                {
+                    usings.Add(value);
+                }
+            }
+
+            return usings.ToArray();
+        }
+
+        /// True when `word` sits at `index` as a whole identifier rather than inside a longer one
+        public static bool IsWordAt(string text, int index, string word)
+        {
+            if (index < 0 || index + word.Length > text.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < word.Length; i++)
+            {
+                if (text[index + i] != word[i])
+                {
+                    return false;
+                }
+            }
+
+            if (index > 0 && IsIdentifierChar(text[index - 1]))
+            {
+                return false;
+            }
+
+            var after = index + word.Length;
+
+            return after >= text.Length || !IsIdentifierChar(text[after]);
+        }
+
+        public static bool IsIdentifierChar(char c)
+        {
+            return c == '_' || char.IsLetterOrDigit(c);
         }
 
         // ------------------------------------------------------------------ member parsing
@@ -506,13 +784,24 @@ namespace UnityCliMacros
 
                 if (!string.IsNullOrEmpty(name))
                 {
+                    // Trailing whitespace is trimmed off the span, not just the text: the last value in
+                    // an enum has no comma, so `i` is the closing brace and would make the value look a
+                    // line longer than it is
+                    var contentEnd = i;
+
+                    while (contentEnd > nameStart && char.IsWhiteSpace(masked[contentEnd - 1]))
+                    {
+                        contentEnd--;
+                    }
+
                     members.Add(new MemberDecl
                     {
                         kind = "enum value",
                         name = name,
                         declStart = nameStart,
-                        headEnd = i,
-                        declEnd = i
+                        nameOffset = cursor - name.Length,
+                        headEnd = contentEnd,
+                        declEnd = contentEnd
                     });
                 }
 
@@ -590,7 +879,10 @@ namespace UnityCliMacros
 
                 if (!string.IsNullOrEmpty(finalizerName))
                 {
-                    members.Add(Make("finalizer", "~" + finalizerName, declStart, end, declEnd));
+                    // Every reader leaves the cursor immediately after what it read, so subtracting the
+                    // length is the name's own offset — which is what tells this declaration apart from
+                    // a use of the same name elsewhere in the same head
+                    members.Add(Make("finalizer", "~" + finalizerName, declStart, cursor - finalizerName.Length, end, declEnd));
                 }
 
                 return;
@@ -615,7 +907,7 @@ namespace UnityCliMacros
 
                 if (ctorName == type.name)
                 {
-                    members.Add(Make("constructor", ctorName, declStart, end, declEnd));
+                    members.Add(Make("constructor", ctorName, declStart, ctorCursor - ctorName.Length, end, declEnd));
                 }
 
                 return;
@@ -628,7 +920,7 @@ namespace UnityCliMacros
                 // `int this[int i]` is an indexer; the name reader stops on `this` as a keyword
                 if (name == "this")
                 {
-                    members.Add(Make("indexer", "this", declStart, end, declEnd));
+                    members.Add(Make("indexer", "this", declStart, cursor - 4, end, declEnd));
                 }
 
                 return;
@@ -640,11 +932,12 @@ namespace UnityCliMacros
                 return;
             }
 
+            var nameOffset = cursor - name.Length;
             var afterName = SkipSpace(masked, SkipGenerics(masked, cursor), end);
 
             if (afterName < end && masked[afterName] == '(')
             {
-                members.Add(Make("method", name, declStart, end, declEnd));
+                members.Add(Make("method", name, declStart, nameOffset, end, declEnd));
                 return;
             }
 
@@ -663,7 +956,7 @@ namespace UnityCliMacros
 
             if (isEvent)
             {
-                members.Add(Make("event", name, declStart, end, declEnd));
+                members.Add(Make("event", name, declStart, nameOffset, end, declEnd));
                 AddExtraDeclarators(masked, afterName, end, declStart, declEnd, "event", members);
                 return;
             }
@@ -673,11 +966,11 @@ namespace UnityCliMacros
             // field into a property
             if (isExpressionBodied || !isAssigned && terminator == '{')
             {
-                members.Add(Make("property", name, declStart, end, declEnd));
+                members.Add(Make("property", name, declStart, nameOffset, end, declEnd));
                 return;
             }
 
-            members.Add(Make("field", name, declStart, end, declEnd));
+            members.Add(Make("field", name, declStart, nameOffset, end, declEnd));
             AddExtraDeclarators(masked, afterName, end, declStart, declEnd, "field", members);
         }
 
@@ -705,7 +998,7 @@ namespace UnityCliMacros
 
                     if (!string.IsNullOrEmpty(name) && !NON_NAMES.Contains(name))
                     {
-                        members.Add(Make(kind, name, declStart, end, declEnd));
+                        members.Add(Make(kind, name, declStart, next - name.Length, end, declEnd));
                     }
                 }
 
@@ -715,6 +1008,7 @@ namespace UnityCliMacros
 
         private static void AddOperator(string masked, int cursor, int end, int declStart, int declEnd, List<MemberDecl> members)
         {
+            var nameOffset = SkipSpace(masked, cursor, end);
             var save = cursor;
             var word = ReadIdentifier(masked, ref cursor, end);
 
@@ -737,16 +1031,17 @@ namespace UnityCliMacros
                 cursor++;
             }
 
-            members.Add(Make("operator", sb.ToString().Trim(), declStart, end, declEnd));
+            members.Add(Make("operator", sb.ToString().Trim(), declStart, nameOffset, end, declEnd));
         }
 
-        private static MemberDecl Make(string kind, string name, int declStart, int headEnd, int declEnd)
+        private static MemberDecl Make(string kind, string name, int declStart, int nameOffset, int headEnd, int declEnd)
         {
             return new MemberDecl
             {
                 kind = kind,
                 name = name,
                 declStart = declStart,
+                nameOffset = nameOffset,
                 headEnd = headEnd,
                 declEnd = declEnd
             };
@@ -1387,34 +1682,48 @@ namespace UnityCliMacros
             }
         }
 
+        private static readonly string[] SOURCE_PATTERN = { "*.cs" };
+
+        /// The YAML assets that hold wiring rather than code: UnityEvent targets, animation event
+        /// function names, ScriptableObject data
+        public static readonly string[] SERIALIZED_PATTERNS = { "*.unity", "*.prefab", "*.asset" };
+
         /// Every .cs file under the roots, skipping build output. Yields lazily, so a caller that hits
         /// its cap stops the walk rather than finishing it.
         public static IEnumerable<string> EnumerateSources(List<string> roots)
         {
+            return EnumerateFiles(roots, SOURCE_PATTERN);
+        }
+
+        public static IEnumerable<string> EnumerateFiles(List<string> roots, string[] patterns)
+        {
             foreach (var root in roots)
             {
-                foreach (var file in WalkDirectory(root))
+                foreach (var file in WalkDirectory(root, patterns))
                 {
                     yield return file;
                 }
             }
         }
 
-        private static IEnumerable<string> WalkDirectory(string directory)
+        private static IEnumerable<string> WalkDirectory(string directory, string[] patterns)
         {
-            string[] files;
+            var files = new List<string>();
 
-            try
+            foreach (var pattern in patterns)
             {
-                files = Directory.GetFiles(directory, "*.cs");
-            }
-            catch (IOException)
-            {
-                yield break;
-            }
-            catch (System.UnauthorizedAccessException)
-            {
-                yield break;
+                try
+                {
+                    files.AddRange(Directory.GetFiles(directory, pattern));
+                }
+                catch (IOException)
+                {
+                    yield break;
+                }
+                catch (System.UnauthorizedAccessException)
+                {
+                    yield break;
+                }
             }
 
             foreach (var file in files)
@@ -1444,11 +1753,253 @@ namespace UnityCliMacros
                     continue;
                 }
 
-                foreach (var file in WalkDirectory(subdirectory))
+                foreach (var file in WalkDirectory(subdirectory, patterns))
                 {
                     yield return file;
                 }
             }
+        }
+
+        // ------------------------------------------------------------------ the shared walk
+
+        public delegate void FileVisitor(SourceFile file);
+
+        /// The walk every source-searching macro needs: read each .cs file, skip the ones whose raw text
+        /// mentions none of `mentions`, apply the assembly filter, then hand the parsed file over.
+        ///
+        /// The `mentions` prefilter is what makes this affordable. Masking and parsing a file costs real
+        /// time, and on a normal project a name appears in a handful of files out of a thousand — so a
+        /// plain case-insensitive IndexOf over the raw text discards almost everything before any of that
+        /// work happens. Pass an empty array to parse every file, which is what a whole-project index
+        /// needs and what a single name lookup must never do.
+        ///
+        /// Returns true when `fileCap` stopped the walk early, so the caller can say so in its output.
+        /// `filesScanned` accumulates, so a macro making several passes reports one honest total.
+        public static bool WalkFiles(List<string> roots, string[] mentions, string[] assemblies, int fileCap, ref int filesScanned, FileVisitor visit)
+        {
+            foreach (var path in EnumerateSources(roots))
+            {
+                if (filesScanned >= fileCap)
+                {
+                    return true;
+                }
+
+                filesScanned++;
+
+                string text;
+
+                if (!TryRead(path, out text))
+                {
+                    continue;
+                }
+
+                if (!Mentions(text, mentions))
+                {
+                    continue;
+                }
+
+                if (!MatchesAny(AssemblyOf(path), assemblies))
+                {
+                    continue;
+                }
+
+                visit(Load(path, text));
+            }
+
+            return false;
+        }
+
+        /// True when the text contains any of the names, or when there are no names to look for
+        public static bool Mentions(string text, string[] names)
+        {
+            if (names.Length == 0)
+            {
+                return true;
+            }
+
+            foreach (var name in names)
+            {
+                if (text.IndexOf(name, System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // ------------------------------------------------------------------ serialized wiring
+
+        public struct SerializedHit
+        {
+            public string path;
+            public int line;
+            public string key;
+            public string value;
+        }
+
+        /// The YAML keys that name a member or type in text rather than by GUID, and so are the only
+        /// places a scene or prefab can be searched for one. `m_MethodName` is a UnityEvent's persistent
+        /// call, `functionName` an AnimationEvent, `m_TargetAssemblyTypeName` the type a UnityEvent
+        /// targets.
+        public static readonly string[] WIRING_KEYS = { "m_MethodName", "functionName", "m_TargetAssemblyTypeName" };
+
+        /// Scans Unity's YAML assets for wiring that names one of `names`.
+        ///
+        /// A method invoked only from a UnityEvent on a prefab has no caller anywhere in source, so every
+        /// code-only search says it is dead. It is not, and deleting it breaks a scene silently. This is
+        /// the one place that fact is visible.
+        ///
+        /// Read line by line rather than whole: a large scene runs to tens of megabytes and nothing here
+        /// needs more than one line at a time.
+        public static bool ScanSerialized(List<string> roots, string[] names, int fileCap, ref int filesScanned, List<SerializedHit> hits, int maxHits)
+        {
+            foreach (var path in EnumerateFiles(roots, SERIALIZED_PATTERNS))
+            {
+                if (filesScanned >= fileCap || hits.Count >= maxHits)
+                {
+                    return true;
+                }
+
+                filesScanned++;
+
+                try
+                {
+                    using (var reader = new StreamReader(path))
+                    {
+                        var lineNumber = 0;
+                        string line;
+
+                        while ((line = reader.ReadLine()) != null)
+                        {
+                            lineNumber++;
+
+                            if (hits.Count >= maxHits)
+                            {
+                                return true;
+                            }
+
+                            string key;
+                            string value;
+
+                            if (!TrySplitYaml(line, out key, out value))
+                            {
+                                continue;
+                            }
+
+                            if (!MatchesExact(key, WIRING_KEYS))
+                            {
+                                continue;
+                            }
+
+                            // `m_TargetAssemblyTypeName` holds `Type, Assembly`; only the type is a name
+                            // anyone would have searched for
+                            var comma = value.IndexOf(',');
+                            var bare = comma >= 0 ? value.Substring(0, comma).Trim() : value;
+                            var simple = SimpleTypeName(bare);
+
+                            if (!MatchesExact(bare, names) && !MatchesExact(simple, names))
+                            {
+                                continue;
+                            }
+
+                            hits.Add(new SerializedHit
+                            {
+                                path = RelativePath(Normalize(path)),
+                                line = lineNumber,
+                                key = key,
+                                value = bare
+                            });
+                        }
+                    }
+                }
+                catch (IOException)
+                {
+                }
+                catch (System.UnauthorizedAccessException)
+                {
+                }
+            }
+
+            return false;
+        }
+
+        /// Splits one YAML line into key and value, tolerating the `- key: value` form a sequence entry
+        /// uses. Returns false for anything without a value, which is every nesting line.
+        private static bool TrySplitYaml(string line, out string key, out string value)
+        {
+            key = null;
+            value = null;
+
+            var colon = line.IndexOf(':');
+
+            if (colon <= 0 || colon == line.Length - 1)
+            {
+                return false;
+            }
+
+            var start = 0;
+
+            while (start < colon && (line[start] == ' ' || line[start] == '-' || line[start] == '\t'))
+            {
+                start++;
+            }
+
+            if (start >= colon)
+            {
+                return false;
+            }
+
+            key = line.Substring(start, colon - start).Trim();
+            value = line.Substring(colon + 1).Trim();
+
+            return key.Length > 0 && value.Length > 0;
+        }
+
+        private static bool MatchesExact(string value, string[] candidates)
+        {
+            foreach (var candidate in candidates)
+            {
+                if (string.Equals(value, candidate, System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// Whole-identifier occurrences of `name` in the masked text, so a search for `Key` cannot match
+        /// inside `KeyCode` and a name inside a comment or a string literal cannot match at all
+        public static List<int> Occurrences(string masked, string name)
+        {
+            var found = new List<int>();
+
+            if (string.IsNullOrEmpty(name))
+            {
+                return found;
+            }
+
+            var from = 0;
+
+            while (from <= masked.Length - name.Length)
+            {
+                var index = masked.IndexOf(name, from, System.StringComparison.Ordinal);
+
+                if (index < 0)
+                {
+                    break;
+                }
+
+                if (IsWordAt(masked, index, name))
+                {
+                    found.Add(index);
+                }
+
+                from = index + 1;
+            }
+
+            return found;
         }
 
         private static bool IsSkipped(string directoryName)
