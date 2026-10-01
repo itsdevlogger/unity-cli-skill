@@ -24,19 +24,6 @@ namespace UnityCliMacros
         /// roots, and no Unity hierarchy worth auditing is deeper than this.
         private const int MAX_DEPTH = 12;
 
-        private const string LEGEND =
-            "r=results, one entry per name asked for; q=the name, d=types found for it. " +
-            "Per type: n=full name, k=kind, f=project-relative file, l=declaration line, a=assembly, " +
-            "dir=down for a type deriving from the query or up for one the query derives from, " +
-            "depth=levels away from the queried type (1 is a direct relationship), " +
-            "via=the intermediate type the relationship runs through, absent when direct, " +
-            "b=the type's own base list as written. " +
-            "Matched on base lists parsed from source by SIMPLE NAME, so two same-named types in " +
-            "different namespaces are not told apart, and a base declared outside the searched roots " +
-            "(MonoBehaviour, anything from a precompiled package) ends the chain there rather than " +
-            "being reported. Source cannot say which base-list entry is the class and which are " +
-            "interfaces, so 'derives from' here covers both extending and implementing.";
-
         private struct Relation
         {
             public CSharpHelper.SourceFile file;
@@ -346,50 +333,32 @@ namespace UnityCliMacros
 
         private static string Format(string[] names, List<Relation>[] relations, int max, bool capped, int filesScanned, List<string> missingRoots)
         {
-            var sb = new StringBuilder();
-
-            sb.Append("{\"k\":\"");
-            JsonHelper.AppendProse(sb, LEGEND);
-            sb.Append("\",\"r\":[");
-
+            var sb = new FlatBuilder();
             var dropped = 0;
 
             for (var i = 0; i < names.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append("{\"q\":\"");
-                JsonHelper.AppendString(sb, names[i]);
-                sb.Append("\",\"d\":[");
-
                 var ordered = relations[i];
                 ordered.Sort(Compare);
 
-                for (var j = 0; j < ordered.Count && j < max; j++)
+                if (ordered.Count == 0)
                 {
-                    if (j > 0)
-                    {
-                        sb.Append(',');
-                    }
-
-                    AppendRelation(sb, ordered[j]);
+                    sb.Line(0, FlatHelper.Handle(names[i]) + "  nothing derives from it and it derives from nothing in source");
+                    continue;
                 }
 
-                sb.Append(']');
+                var shown = ordered.Count < max ? ordered.Count : max;
+
+                // Split the two directions into their own headed sections rather than tagging every
+                // row with dir, which was the same word repeated down the whole list.
+                AppendSection(sb, names[i], ordered, shown, "up");
+                AppendSection(sb, names[i], ordered, shown, "down");
 
                 if (ordered.Count > max)
                 {
-                    sb.Append(",\"more\":").Append(ordered.Count - max);
                     dropped += ordered.Count - max;
                 }
-
-                sb.Append('}');
             }
-
-            sb.Append(']');
 
             var notes = new List<string>();
 
@@ -408,16 +377,43 @@ namespace UnityCliMacros
                 notes.Add("root not found: " + string.Join(", ", missingRoots.ToArray()));
             }
 
-            if (notes.Count > 0)
-            {
-                sb.Append(",\"note\":\"");
-                JsonHelper.AppendProse(sb, string.Join("; ", notes.ToArray()));
-                sb.Append('"');
-            }
-
-            sb.Append('}');
+            FlatHelper.AppendNotes(sb, notes);
 
             return sb.ToString();
+        }
+
+        /// One direction's worth of relations, if there are any.
+        ///
+        /// Depth is rendered as indentation rather than as a number, which also retires `via`: a type
+        /// sitting one level in under another IS the intermediate relationship that via named, said
+        /// structurally instead of as a cross-reference the reader has to resolve.
+        private static void AppendSection(FlatBuilder sb, string query, List<Relation> ordered, int shown, string direction)
+        {
+            var count = 0;
+
+            for (var i = 0; i < shown; i++)
+            {
+                if (ordered[i].direction == direction)
+                {
+                    count++;
+                }
+            }
+
+            if (count == 0)
+            {
+                return;
+            }
+
+            sb.Line(0, FlatHelper.Handle(query) + "  "
+                       + (direction == "up" ? "derives from " + count : FlatHelper.Count(count, "subtype")));
+
+            for (var i = 0; i < shown; i++)
+            {
+                if (ordered[i].direction == direction)
+                {
+                    AppendRelation(sb, ordered[i]);
+                }
+            }
         }
 
         /// Ancestors before descendants, then nearest first — the order the chain reads in
@@ -436,49 +432,17 @@ namespace UnityCliMacros
             return string.CompareOrdinal(a.declaration.name, b.declaration.name);
         }
 
-        private static void AppendRelation(StringBuilder sb, Relation relation)
+        private static void AppendRelation(FlatBuilder sb, Relation relation)
         {
             var declaration = relation.declaration;
 
-            sb.Append("{\"n\":\"");
-            JsonHelper.AppendString(sb, declaration.FullName);
-            sb.Append("\",\"k\":\"");
-            JsonHelper.AppendString(sb, declaration.kind);
-            sb.Append("\",\"f\":\"");
-            JsonHelper.AppendString(sb, relation.file.path);
-            sb.Append("\",\"l\":").Append(relation.file.LineOf(declaration.declStart));
-            sb.Append(",\"a\":\"");
-            JsonHelper.AppendString(sb, relation.file.assembly);
-            sb.Append("\",\"dir\":\"").Append(relation.direction);
-            sb.Append("\",\"depth\":").Append(relation.depth);
-
-            if (!string.IsNullOrEmpty(relation.via))
-            {
-                sb.Append(",\"via\":\"");
-                JsonHelper.AppendString(sb, relation.via);
-                sb.Append('"');
-            }
-
-            if (declaration.bases != null && declaration.bases.Length > 0)
-            {
-                sb.Append(",\"b\":[");
-
-                for (var i = 0; i < declaration.bases.Length; i++)
-                {
-                    if (i > 0)
-                    {
-                        sb.Append(',');
-                    }
-
-                    sb.Append('"');
-                    JsonHelper.AppendString(sb, declaration.bases[i]);
-                    sb.Append('"');
-                }
-
-                sb.Append(']');
-            }
-
-            sb.Append('}');
+            // Depth 1 sits at indent 1, so the queried type is the implicit root of the tree. The
+            // base list is dropped: for a down relation it necessarily contains the query, and for
+            // an up relation the next line of the chain already says it.
+            sb.Line(relation.depth, declaration.FullName + "  " + declaration.kind
+                                    + "  " + relation.file.assembly
+                                    + "  " + FlatHelper.At(relation.file.path, relation.file.LineOf(declaration.declStart)));
         }
+
     }
 }

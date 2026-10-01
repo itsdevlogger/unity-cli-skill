@@ -26,16 +26,6 @@ namespace UnityCliMacros
         private const int MAX_RESULTS_LIMIT = 50;
         private const int MAX_CODE_LINES = 400;
 
-        private const string LEGEND =
-            "r=results, one entry per name asked for; q=the name, d=declarations found for it, " +
-            "n=full name (namespace + any outer types), k=kind, f=project-relative file path, " +
-            "l=1-based line of the declaration, a=assembly, s=declaration signature including base list, " +
-            "c=source text (only when code is not 0). " +
-            "Parsed from source, not reflection, so it finds partial halves separately and still works " +
-            "while the project is failing to compile. A name that matches something exactly never also " +
-            "returns substring matches; substring matching is only the fallback when nothing matches " +
-            "exactly. An empty d means the name was not declared under the searched roots.";
-
         private struct Hit
         {
             public int tier;
@@ -111,7 +101,7 @@ namespace UnityCliMacros
                 }
             });
 
-            return Format(names, hits, max, code, capped, filesScanned, missingRoots);
+            return Format(names, hits, max, code, capped, filesScanned, missingRoots, root);
         }
 
         /// 3 exact, 2 exact ignoring case, 1 substring, 0 no match. Keeping the tiers apart is what lets
@@ -132,51 +122,38 @@ namespace UnityCliMacros
             return name.IndexOf(needle, System.StringComparison.OrdinalIgnoreCase) >= 0 ? 1 : 0;
         }
 
-        private static string Format(string[] names, List<Hit>[] hits, int max, int code, bool capped, int filesScanned, List<string> missingRoots)
+        private static string Format(string[] names, List<Hit>[] hits, int max, int code, bool capped, int filesScanned, List<string> missingRoots, string root)
         {
-            var sb = new StringBuilder();
-
-            sb.Append("{\"k\":\"");
-            JsonHelper.AppendProse(sb, LEGEND);
-            sb.Append("\",\"r\":[");
-
+            var sb = new FlatBuilder();
             var dropped = 0;
 
             for (var i = 0; i < names.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append("{\"q\":\"");
-                JsonHelper.AppendString(sb, names[i]);
-                sb.Append("\",\"d\":[");
-
                 var ordered = Best(hits[i]);
 
-                for (var j = 0; j < ordered.Count && j < max; j++)
+                // A name with nothing behind it says so on one line. The roots are named because
+                // "not declared" is almost always "not declared *there*" - the default is Assets,
+                // and the type being looked for is in a package half the time it comes up.
+                if (ordered.Count == 0)
                 {
-                    if (j > 0)
-                    {
-                        sb.Append(',');
-                    }
+                    sb.Line(0, FlatHelper.Handle(names[i]) + "  not declared under " + root);
+                    continue;
+                }
 
+                var shown = ordered.Count < max ? ordered.Count : max;
+
+                sb.Line(0, FlatHelper.Handle(names[i]) + "  " + FlatHelper.Count(shown, "declaration"));
+
+                for (var j = 0; j < shown; j++)
+                {
                     AppendDeclaration(sb, ordered[j], code);
                 }
 
-                sb.Append("]");
-
                 if (ordered.Count > max)
                 {
-                    sb.Append(",\"more\":").Append(ordered.Count - max);
                     dropped += ordered.Count - max;
                 }
-
-                sb.Append('}');
             }
-
-            sb.Append(']');
 
             var notes = new List<string>();
 
@@ -195,14 +172,7 @@ namespace UnityCliMacros
                 notes.Add("root not found: " + string.Join(", ", missingRoots.ToArray()));
             }
 
-            if (notes.Count > 0)
-            {
-                sb.Append(",\"note\":\"");
-                JsonHelper.AppendProse(sb, string.Join("; ", notes.ToArray()));
-                sb.Append('"');
-            }
-
-            sb.Append('}');
+            FlatHelper.AppendNotes(sb, notes);
 
             return sb.ToString();
         }
@@ -248,33 +218,34 @@ namespace UnityCliMacros
             return kept;
         }
 
-        private static void AppendDeclaration(StringBuilder sb, Hit hit, int code)
+        /// Two lines per declaration: what it is, then where it is. The signature carries the kind and
+        /// the base list already, so neither is repeated; the location line carries only what the
+        /// signature cannot say.
+        private static void AppendDeclaration(FlatBuilder sb, Hit hit, int code)
         {
             var declaration = hit.declaration;
 
-            sb.Append("{\"n\":\"");
-            JsonHelper.AppendString(sb, declaration.FullName);
-            sb.Append("\",\"k\":\"");
-            JsonHelper.AppendString(sb, declaration.kind);
-            sb.Append("\",\"f\":\"");
-            JsonHelper.AppendString(sb, hit.file.path);
-            sb.Append("\",\"l\":").Append(hit.file.LineOf(declaration.declStart));
-            sb.Append(",\"a\":\"");
-            JsonHelper.AppendString(sb, hit.file.assembly);
-            sb.Append("\",\"s\":\"");
-            JsonHelper.AppendProse(sb, CSharpHelper.Signature(hit.file, declaration.declStart, declaration.headEnd));
-            sb.Append('"');
+            sb.Line(1, FlatHelper.Text(CSharpHelper.Signature(hit.file, declaration.declStart, declaration.headEnd)));
+
+            // Namespace and outer types, which the signature omits and which decide whether a type
+            // can be named unqualified. Only when there are any - most project types sit at the root.
+            var scope = FlatHelper.Scope(declaration.FullName, declaration.name);
+            var where = hit.file.assembly;
+
+            if (!string.IsNullOrEmpty(scope))
+            {
+                where += "  ns " + scope;
+            }
+
+            // Path last, because it is the one field here that may contain a space.
+            sb.Line(2, where + "  " + FlatHelper.At(hit.file.path, hit.file.LineOf(declaration.declStart)));
 
             if (code != 0)
             {
                 var end = declaration.bodyEnd < 0 ? declaration.headEnd : declaration.bodyEnd + 1;
 
-                sb.Append(",\"c\":\"");
-                JsonHelper.AppendString(sb, CSharpHelper.Snippet(hit.file, declaration.declStart, end, code));
-                sb.Append('"');
+                sb.Block(3, CSharpHelper.Snippet(hit.file, declaration.declStart, end, code));
             }
-
-            sb.Append('}');
         }
     }
 }

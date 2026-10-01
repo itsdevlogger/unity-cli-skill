@@ -33,23 +33,6 @@ namespace UnityCliMacros
         /// something useful about what the name was called on.
         private const int RECEIVER_WINDOW = 80;
 
-        private const string LEGEND =
-            "r=results, one entry per name asked for; q=the name, u=uses found for it. " +
-            "Per use: f=project-relative file, l=1-based line, t=type containing the use, " +
-            "in=member containing the use (the one to read first), k=how the name is used, " +
-            "o=the receiver written before it when there is one, s=the use's line collapsed, a=assembly, " +
-            "c=surrounding source (only when ctx is not 0). " +
-            "k is one of call, read, write, new, type, inherit, decl, yaml. " +
-            "NAME-BASED, NOT SEMANTIC: no overload resolution and no type inference, so two unrelated " +
-            "types declaring the same member name both answer here - narrow with type or asm. k is " +
-            "decided from surrounding punctuation and is a good approximation, not a compiler's answer; " +
-            "read is the catch-all. " +
-            "k=yaml is a scene, prefab or asset wiring the name by text, with key=the YAML key that " +
-            "names it (UnityEvent m_MethodName, AnimationEvent functionName, UnityEvent " +
-            "m_TargetAssemblyTypeName) and n=how many times that file wires it, l being the first. " +
-            "A member reached only this way has no caller in source and is NOT dead code. " +
-            "Declarations are excluded unless decl=1, and come back as k=decl.";
-
         private struct Use
         {
             public CSharpHelper.SourceFile file;
@@ -619,50 +602,46 @@ namespace UnityCliMacros
 
         private static string Format(string[] names, List<Use>[] uses, int max, int context, bool capped, int filesScanned, List<string> missingRoots)
         {
-            var sb = new StringBuilder();
-
-            sb.Append("{\"k\":\"");
-            JsonHelper.AppendProse(sb, LEGEND);
-            sb.Append("\",\"r\":[");
-
+            var sb = new FlatBuilder();
             var dropped = 0;
 
             for (var i = 0; i < names.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append("{\"q\":\"");
-                JsonHelper.AppendString(sb, names[i]);
-                sb.Append("\",\"u\":[");
-
                 var ordered = uses[i];
                 ordered.Sort(Compare);
 
-                for (var j = 0; j < ordered.Count && j < max; j++)
+                if (ordered.Count == 0)
                 {
-                    if (j > 0)
+                    sb.Line(0, FlatHelper.Handle(names[i]) + "  no uses");
+                    continue;
+                }
+
+                var shown = ordered.Count < max ? ordered.Count : max;
+
+                sb.Line(0, FlatHelper.Handle(names[i]) + "  " + FlatHelper.Count(shown, "use") + WiringWarning(ordered, shown));
+
+                // Grouped by file, with the path stated once. Repeating a 70-character path on every
+                // row was most of this macro's output on any real query.
+                string currentPath = null;
+
+                for (var j = 0; j < shown; j++)
+                {
+                    var path = PathOf(ordered[j]);
+
+                    if (path != currentPath)
                     {
-                        sb.Append(',');
+                        sb.Line(1, FlatHelper.Handle(path));
+                        currentPath = path;
                     }
 
                     AppendUse(sb, ordered[j], context);
                 }
 
-                sb.Append(']');
-
                 if (ordered.Count > max)
                 {
-                    sb.Append(",\"more\":").Append(ordered.Count - max);
                     dropped += ordered.Count - max;
                 }
-
-                sb.Append('}');
             }
-
-            sb.Append(']');
 
             var notes = new List<string>();
 
@@ -681,16 +660,34 @@ namespace UnityCliMacros
                 notes.Add("root not found: " + string.Join(", ", missingRoots.ToArray()));
             }
 
-            if (notes.Count > 0)
-            {
-                sb.Append(",\"note\":\"");
-                JsonHelper.AppendProse(sb, string.Join("; ", notes.ToArray()));
-                sb.Append('"');
-            }
-
-            sb.Append('}');
+            FlatHelper.AppendNotes(sb, notes);
 
             return sb.ToString();
+        }
+
+        /// The one caveat too dangerous to leave to documentation, raised only on the query where it
+        /// decides the answer.
+        ///
+        /// A member reached only from a UnityEvent on a scene or prefab has no caller anywhere in
+        /// source, so every code-only search reports it unused and deleting it breaks the scene with
+        /// nothing logged. This macro reads that wiring, so it can say so - and saying it on every
+        /// query would be the per-call legend this format exists to remove, while saying it only in
+        /// the docs would put it out of sight exactly when it matters.
+        private static string WiringWarning(List<Use> ordered, int shown)
+        {
+            var wiring = 0;
+
+            for (var i = 0; i < shown; i++)
+            {
+                if (ordered[i].kind == "yaml")
+                {
+                    wiring++;
+                }
+            }
+
+            return wiring > 0 && wiring == shown
+                ? " - all scene/prefab wiring, no source caller, NOT dead code"
+                : "";
         }
 
         /// Wiring first — it is the finding a code-only search would have missed — then by file so the
@@ -717,65 +714,53 @@ namespace UnityCliMacros
             return use.file == null ? use.line : use.file.LineOf(use.offset);
         }
 
-        private static void AppendUse(StringBuilder sb, Use use, int context)
+        /// One line per use: line, kind, receiver, then the enclosing Type.Member. All four are
+        /// free of spaces, so nothing here needs the terminal slot the path took on the group line.
+        ///
+        /// The receiver stays because this macro matches by name and cannot resolve overloads, so
+        /// when two unrelated types declare the same member it is the only thing distinguishing
+        /// their call sites. The collapsed source line the JSON form carried is gone - it was most
+        /// of the payload and duplicates what --ctx exists to provide.
+        private static void AppendUse(FlatBuilder sb, Use use, int context)
         {
-            sb.Append("{\"f\":\"");
-            JsonHelper.AppendString(sb, PathOf(use));
-            sb.Append("\",\"l\":").Append(LineOf(use));
-            sb.Append(",\"k\":\"");
-            JsonHelper.AppendString(sb, use.kind);
-            sb.Append('"');
-
-            if (!string.IsNullOrEmpty(use.owner))
+            if (use.kind == "yaml")
             {
-                sb.Append(",\"t\":\"");
-                JsonHelper.AppendString(sb, use.owner);
-                sb.Append('"');
+                var wiring = "yaml  " + (string.IsNullOrEmpty(use.key) ? "?" : use.key);
+
+                if (use.count > 1)
+                {
+                    wiring += "  x" + use.count;
+                }
+
+                sb.Line(2, wiring + "  first at " + LineOf(use));
+                return;
             }
+
+            var where = use.owner;
 
             if (!string.IsNullOrEmpty(use.member))
             {
-                sb.Append(",\"in\":\"");
-                JsonHelper.AppendString(sb, use.member);
-                sb.Append('"');
+                where = string.IsNullOrEmpty(where) ? use.member : where + "." + use.member;
             }
 
-            if (!string.IsNullOrEmpty(use.key))
-            {
-                sb.Append(",\"key\":\"");
-                JsonHelper.AppendString(sb, use.key);
-                sb.Append('"');
-            }
-
-            if (use.count > 1)
-            {
-                sb.Append(",\"n\":").Append(use.count);
-            }
+            var line = LineOf(use).ToString().PadLeft(5) + "  " + use.kind.PadRight(7);
 
             if (!string.IsNullOrEmpty(use.receiver))
             {
-                sb.Append(",\"o\":\"");
-                JsonHelper.AppendString(sb, use.receiver);
-                sb.Append('"');
+                line += " " + use.receiver;
             }
 
-            if (use.file != null)
+            if (!string.IsNullOrEmpty(where))
             {
-                sb.Append(",\"a\":\"");
-                JsonHelper.AppendString(sb, use.file.assembly);
-                sb.Append("\",\"s\":\"");
-                JsonHelper.AppendProse(sb, CSharpHelper.Snippet(use.file, use.offset, use.offset, 1).Trim());
-                sb.Append('"');
-
-                if (context > 0)
-                {
-                    sb.Append(",\"c\":\"");
-                    JsonHelper.AppendString(sb, ContextAround(use.file, use.offset, context));
-                    sb.Append('"');
-                }
+                line += "  " + where;
             }
 
-            sb.Append('}');
+            sb.Line(2, line);
+
+            if (context > 0 && use.file != null)
+            {
+                sb.Block(3, ContextAround(use.file, use.offset, context));
+            }
         }
 
         /// `context` lines either side of the use, so a call's arguments and the branch it sits in are

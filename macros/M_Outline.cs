@@ -26,16 +26,6 @@ namespace UnityCliMacros
         /// roots, and a hierarchy deeper than this is not a hierarchy anyone is reading an outline of.
         private const int MAX_INHERITANCE_DEPTH = 6;
 
-        private const string LEGEND =
-            "r=types outlined; t=type full name, k=kind, f=project-relative file path, l=declaration " +
-            "line, a=assembly, b=base list as written (source cannot say which entry is the class and " +
-            "which are interfaces, so treat it as unordered), u=file usings, d=members in source order. " +
-            "Each member is n=name, k=kind, l=line, s=signature, len=how many lines the member spans " +
-            "(1 for a field, and the number worth reading for a method). from=the base type that " +
-            "declares it, present only on inherited members. " +
-            "No bodies are returned: use m_find_member --code, or read the file at l, once len says the " +
-            "member is worth it. Parsed from source, so it works while the project is failing to compile.";
-
         private struct TypeOutline
         {
             public CSharpHelper.SourceFile file;
@@ -336,11 +326,12 @@ namespace UnityCliMacros
 
         private static string Format(List<TypeOutline> outlines, int max, bool capped, int filesScanned, List<string> missingRoots)
         {
-            var sb = new StringBuilder();
+            var sb = new FlatBuilder();
 
-            sb.Append("{\"k\":\"");
-            JsonHelper.AppendProse(sb, LEGEND);
-            sb.Append("\",\"r\":[");
+            if (outlines.Count == 0)
+            {
+                return "no matching type declared under the searched roots";
+            }
 
             var shown = 0;
             var droppedMembers = 0;
@@ -348,57 +339,58 @@ namespace UnityCliMacros
             for (var i = 0; i < outlines.Count && shown < MAX_TYPES_REPORTED; i++)
             {
                 var outline = outlines[i];
-
-                if (shown > 0)
-                {
-                    sb.Append(',');
-                }
-
                 shown++;
 
                 var declaration = outline.declaration;
+                var head = declaration.FullName + "  " + declaration.kind;
 
-                sb.Append("{\"t\":\"");
-                JsonHelper.AppendString(sb, declaration.FullName);
-                sb.Append("\",\"k\":\"");
-                JsonHelper.AppendString(sb, declaration.kind);
-                sb.Append("\",\"f\":\"");
-                JsonHelper.AppendString(sb, outline.file.path);
-                sb.Append("\",\"l\":").Append(outline.file.LineOf(declaration.declStart));
-                sb.Append(",\"a\":\"");
-                JsonHelper.AppendString(sb, outline.file.assembly);
-                sb.Append('"');
+                if (declaration.bases != null && declaration.bases.Length > 0)
+                {
+                    head += " : " + string.Join(", ", declaration.bases);
+                }
 
-                AppendStrings(sb, "b", declaration.bases);
-                AppendStrings(sb, "u", CSharpHelper.ParseUsings(outline.file));
+                sb.Line(0, head);
+                sb.Line(1, outline.file.assembly + "  "
+                           + FlatHelper.At(outline.file.path, outline.file.LineOf(declaration.declStart)));
 
-                sb.Append(",\"d\":[");
+                var usings = CSharpHelper.ParseUsings(outline.file);
+
+                if (usings != null && usings.Length > 0)
+                {
+                    sb.Line(1, "usings: " + string.Join(", ", usings));
+                }
 
                 var members = outline.members;
                 members.Sort(CompareMembers);
 
-                for (var j = 0; j < members.Count && j < max; j++)
+                var limit = members.Count < max ? members.Count : max;
+
+                // Inherited members become their own headed section rather than carrying a `from`
+                // tag per row. That keeps the signature last on its line - it is the one field here
+                // that contains spaces - and it reads as what it is: a second type's surface.
+                string section = null;
+
+                for (var j = 0; j < limit; j++)
                 {
-                    if (j > 0)
+                    var member = members[j];
+                    var wanted = member.from == null
+                        ? "members (" + CountOwn(members, limit) + ")"
+                        : "inherited from " + member.from + " (" + CountFrom(members, limit, member.from) + ")";
+
+                    if (section != wanted)
                     {
-                        sb.Append(',');
+                        sb.Line(1, wanted);
+                        section = wanted;
                     }
 
-                    AppendMember(sb, members[j]);
+                    AppendMember(sb, member);
                 }
-
-                sb.Append(']');
 
                 if (members.Count > max)
                 {
-                    sb.Append(",\"more\":").Append(members.Count - max);
                     droppedMembers += members.Count - max;
                 }
-
-                sb.Append('}');
             }
-
-            sb.Append(']');
 
             var notes = new List<string>();
 
@@ -422,16 +414,39 @@ namespace UnityCliMacros
                 notes.Add("root not found: " + string.Join(", ", missingRoots.ToArray()));
             }
 
-            if (notes.Count > 0)
-            {
-                sb.Append(",\"note\":\"");
-                JsonHelper.AppendProse(sb, string.Join("; ", notes.ToArray()));
-                sb.Append('"');
-            }
-
-            sb.Append('}');
+            FlatHelper.AppendNotes(sb, notes);
 
             return sb.ToString();
+        }
+
+        private static int CountOwn(List<Member> members, int limit)
+        {
+            var n = 0;
+
+            for (var i = 0; i < limit; i++)
+            {
+                if (members[i].from == null)
+                {
+                    n++;
+                }
+            }
+
+            return n;
+        }
+
+        private static int CountFrom(List<Member> members, int limit, string from)
+        {
+            var n = 0;
+
+            for (var i = 0; i < limit; i++)
+            {
+                if (members[i].from == from)
+                {
+                    n++;
+                }
+            }
+
+            return n;
         }
 
         /// Own members first in source order, then inherited ones grouped by the type declaring them —
@@ -459,53 +474,22 @@ namespace UnityCliMacros
             return a.declaration.declStart.CompareTo(b.declaration.declStart);
         }
 
-        private static void AppendMember(StringBuilder sb, Member member)
+        /// line, span, kind, then the signature last because it is the field carrying spaces.
+        ///
+        /// The span is the column that earns this macro its keep: it says which member is the
+        /// four-line accessor and which is the 200-line state machine, so the reader picks what to
+        /// open before paying to read it.
+        private static void AppendMember(FlatBuilder sb, Member member)
         {
             var declaration = member.declaration;
             var startLine = member.file.LineOf(declaration.declStart);
             var endLine = member.file.LineOf(declaration.declEnd > 0 ? declaration.declEnd - 1 : declaration.declStart);
+            var span = endLine >= startLine ? endLine - startLine + 1 : 1;
 
-            sb.Append("{\"n\":\"");
-            JsonHelper.AppendString(sb, declaration.name);
-            sb.Append("\",\"k\":\"");
-            JsonHelper.AppendString(sb, declaration.kind);
-            sb.Append("\",\"l\":").Append(startLine);
-            sb.Append(",\"s\":\"");
-            JsonHelper.AppendProse(sb, CSharpHelper.Signature(member.file, declaration.declStart, declaration.headEnd));
-            sb.Append("\",\"len\":").Append(endLine >= startLine ? endLine - startLine + 1 : 1);
-
-            if (member.from != null)
-            {
-                sb.Append(",\"from\":\"");
-                JsonHelper.AppendString(sb, member.from);
-                sb.Append('"');
-            }
-
-            sb.Append('}');
+            sb.Line(2, startLine.ToString().PadLeft(5) + span.ToString().PadLeft(5) + "  "
+                       + declaration.kind.PadRight(11) + " "
+                       + FlatHelper.Text(CSharpHelper.Signature(member.file, declaration.declStart, declaration.headEnd)));
         }
 
-        private static void AppendStrings(StringBuilder sb, string key, string[] values)
-        {
-            if (values == null || values.Length == 0)
-            {
-                return;
-            }
-
-            sb.Append(",\"").Append(key).Append("\":[");
-
-            for (var i = 0; i < values.Length; i++)
-            {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append('"');
-                JsonHelper.AppendString(sb, values[i]);
-                sb.Append('"');
-            }
-
-            sb.Append(']');
-        }
     }
 }

@@ -22,17 +22,6 @@ namespace UnityCliMacros
         private const int MAX_RESULTS_LIMIT = 50;
         private const int MAX_CODE_LINES = 400;
 
-        private const string LEGEND =
-            "r=results, one entry per name asked for; q=the name, d=declarations found for it, " +
-            "n=member name, k=kind (method, property, field, event, constructor, indexer, operator, " +
-            "finalizer, enum value), t=declaring type's full name, f=project-relative file path, " +
-            "l=1-based line of the declaration, a=assembly, s=full signature with modifiers and " +
-            "parameters, c=source text (only when code is not 0). " +
-            "Parsed structurally from source, so call sites, locals and comments cannot appear here and " +
-            "it still works while the project is failing to compile. A name that matches something " +
-            "exactly never also returns substring matches. An empty d means no type under the searched " +
-            "roots declares that member.";
-
         private struct Hit
         {
             public int tier;
@@ -126,7 +115,7 @@ namespace UnityCliMacros
                 }
             });
 
-            return Format(names, hits, max, code, capped, filesScanned, missingRoots);
+            return Format(names, hits, max, code, capped, filesScanned, missingRoots, root);
         }
 
         /// 3 exact, 2 exact ignoring case, 1 substring, 0 no match. A member name is usually typed from
@@ -147,51 +136,35 @@ namespace UnityCliMacros
             return name.IndexOf(needle, System.StringComparison.OrdinalIgnoreCase) >= 0 ? 1 : 0;
         }
 
-        private static string Format(string[] names, List<Hit>[] hits, int max, int code, bool capped, int filesScanned, List<string> missingRoots)
+        private static string Format(string[] names, List<Hit>[] hits, int max, int code, bool capped, int filesScanned, List<string> missingRoots, string root)
         {
-            var sb = new StringBuilder();
-
-            sb.Append("{\"k\":\"");
-            JsonHelper.AppendProse(sb, LEGEND);
-            sb.Append("\",\"r\":[");
-
+            var sb = new FlatBuilder();
             var dropped = 0;
 
             for (var i = 0; i < names.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append("{\"q\":\"");
-                JsonHelper.AppendString(sb, names[i]);
-                sb.Append("\",\"d\":[");
-
                 var ordered = Best(hits[i]);
 
-                for (var j = 0; j < ordered.Count && j < max; j++)
+                if (ordered.Count == 0)
                 {
-                    if (j > 0)
-                    {
-                        sb.Append(',');
-                    }
+                    sb.Line(0, FlatHelper.Handle(names[i]) + "  not declared by any type under " + root);
+                    continue;
+                }
 
+                var shown = ordered.Count < max ? ordered.Count : max;
+
+                sb.Line(0, FlatHelper.Handle(names[i]) + "  " + FlatHelper.Count(shown, "declaration"));
+
+                for (var j = 0; j < shown; j++)
+                {
                     AppendMember(sb, ordered[j], code);
                 }
 
-                sb.Append(']');
-
                 if (ordered.Count > max)
                 {
-                    sb.Append(",\"more\":").Append(ordered.Count - max);
                     dropped += ordered.Count - max;
                 }
-
-                sb.Append('}');
             }
-
-            sb.Append(']');
 
             var notes = new List<string>();
 
@@ -210,14 +183,7 @@ namespace UnityCliMacros
                 notes.Add("root not found: " + string.Join(", ", missingRoots.ToArray()));
             }
 
-            if (notes.Count > 0)
-            {
-                sb.Append(",\"note\":\"");
-                JsonHelper.AppendProse(sb, string.Join("; ", notes.ToArray()));
-                sb.Append('"');
-            }
-
-            sb.Append('}');
+            FlatHelper.AppendNotes(sb, notes);
 
             return sb.ToString();
         }
@@ -263,33 +229,21 @@ namespace UnityCliMacros
             return kept;
         }
 
-        private static void AppendMember(StringBuilder sb, Hit hit, int code)
+        /// Signature, then where it lives. The kind is restated on the location line rather than left
+        /// to the signature, because that is the one thing a signature genuinely cannot settle - a
+        /// property and a field with an initialiser read almost identically.
+        private static void AppendMember(FlatBuilder sb, Hit hit, int code)
         {
             var member = hit.member;
 
-            sb.Append("{\"n\":\"");
-            JsonHelper.AppendString(sb, member.name);
-            sb.Append("\",\"k\":\"");
-            JsonHelper.AppendString(sb, member.kind);
-            sb.Append("\",\"t\":\"");
-            JsonHelper.AppendString(sb, hit.owner.FullName);
-            sb.Append("\",\"f\":\"");
-            JsonHelper.AppendString(sb, hit.file.path);
-            sb.Append("\",\"l\":").Append(hit.file.LineOf(member.declStart));
-            sb.Append(",\"a\":\"");
-            JsonHelper.AppendString(sb, hit.file.assembly);
-            sb.Append("\",\"s\":\"");
-            JsonHelper.AppendProse(sb, CSharpHelper.Signature(hit.file, member.declStart, member.headEnd));
-            sb.Append('"');
+            sb.Line(1, FlatHelper.Text(CSharpHelper.Signature(hit.file, member.declStart, member.headEnd)));
+            sb.Line(2, member.kind + " in " + hit.owner.FullName + "  " + hit.file.assembly
+                       + "  " + FlatHelper.At(hit.file.path, hit.file.LineOf(member.declStart)));
 
             if (code != 0)
             {
-                sb.Append(",\"c\":\"");
-                JsonHelper.AppendString(sb, CSharpHelper.Snippet(hit.file, member.declStart, member.declEnd, code));
-                sb.Append('"');
+                sb.Block(3, CSharpHelper.Snippet(hit.file, member.declStart, member.declEnd, code));
             }
-
-            sb.Append('}');
         }
     }
 }

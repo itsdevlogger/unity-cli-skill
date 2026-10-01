@@ -257,10 +257,6 @@ namespace UnityCliMacros
             { 's', 1 }, { 'm', 60 }, { 'h', 3600 }, { 'd', 86400 }
         };
 
-        private const string LEGEND =
-            "e=entries c=count t=time k=kind(E error/A assert/W warning/L log) m=message f=frames; " +
-            "matched/fetched/buffered counts in m,f,b; x=distinct messages not shown";
-
         [CliCommand("m_find_logs", "Search the Editor console by regex over message AND stack trace, deduped and stack-trimmed. Use instead of get_console_logs.", MainThreadRequired = false)]
         public static string FindLogs(
             [CliArg("grep", "Regex to keep, matched against the message AND the stack trace (so a class name finds errors raised inside it)")]
@@ -419,62 +415,35 @@ namespace UnityCliMacros
         private static string Format(List<Group> groups, int matched, int fetched, int buffered, int max, int stackFrames, int width)
         {
             var shown = Math.Min(groups.Count, max);
-            var sb = new StringBuilder();
 
-            sb.Append("{\"k\":\"");
-            AppendJsonString(sb, LEGEND);
-            sb.Append("\",\"m\":").Append(matched);
-            sb.Append(",\"f\":").Append(fetched);
-            sb.Append(",\"b\":").Append(buffered);
-
-            if (groups.Count > shown)
+            // The most repeated call in any build-fix loop is the one that finds nothing, and it used
+            // to answer with four zeroed counters behind a legend explaining what the zeroes meant.
+            if (shown == 0)
             {
-                sb.Append(",\"x\":").Append(groups.Count - shown);
+                return buffered == 0 ? "console is empty" : "no matches in " + buffered + " buffered";
             }
 
-            sb.Append(",\"e\":[");
+            var sb = new FlatBuilder();
+
+            sb.Line(0, FlatHelper.Count(matched, "match") + " of " + buffered + " buffered"
+                       + (groups.Count > shown ? ", " + (groups.Count - shown) + " distinct not shown" : ""));
 
             for (var i = 0; i < shown; i++)
             {
                 var group = groups[i];
 
-                if (i > 0)
+                // Kind, repeat count and time are all fixed-width, so the message takes the terminal
+                // slot it needs.
+                sb.Line(1, MarkOf(group.kind)
+                           + ("x" + group.count).PadLeft(5) + "  "
+                           + (group.hasStamp ? group.stamp.ToString("HH:mm:ss") : "--:--:--") + "  "
+                           + FlatHelper.Text(Truncate(group.message, width)));
+
+                foreach (var frame in Frames(group.stack, stackFrames))
                 {
-                    sb.Append(',');
+                    sb.Line(2, FlatHelper.Text(frame));
                 }
-
-                sb.Append("{\"c\":").Append(group.count);
-                sb.Append(",\"t\":\"").Append(group.hasStamp ? group.stamp.ToString("HH:mm:ss") : "--:--:--");
-                sb.Append("\",\"k\":\"").Append(MarkOf(group.kind));
-                sb.Append("\",\"m\":\"");
-                AppendJsonString(sb, Truncate(group.message, width));
-                sb.Append('"');
-
-                var frames = Frames(group.stack, stackFrames);
-
-                if (frames.Count > 0)
-                {
-                    sb.Append(",\"f\":[");
-
-                    for (var j = 0; j < frames.Count; j++)
-                    {
-                        if (j > 0)
-                        {
-                            sb.Append(',');
-                        }
-
-                        sb.Append('"');
-                        AppendJsonString(sb, frames[j]);
-                        sb.Append('"');
-                    }
-
-                    sb.Append(']');
-                }
-
-                sb.Append('}');
             }
-
-            sb.Append("]}");
 
             return sb.ToString();
         }

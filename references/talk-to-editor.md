@@ -75,16 +75,21 @@ unity command m_find_macro --q "material shader assign" --m 5
 | `m` | `5` | Max results (1–50). |
 
 Scores name hits far above description hits, exact tokens above prefixes above substrings, and
-rewards matching every term. Returns compact JSON:
+rewards matching every term. Returns one stanza per macro:
 
-```json
-{"k":"<legend>","r":[{"n":"eval","s":114,"d":"Evaluate C# code…","a":[["code:string*","C# code to evaluate"],["timeout:int=5000","Timeout in ms"]]}]}
+```
+eval  114
+  Evaluate C# code in the live Editor and return its result.
+    code*     string      C# code to evaluate
+    timeout   int=5000    Timeout in ms
+    out       The snippet's return value, or a compile diagnostic.
 ```
 
-Read an arg token as `name:type` followed by `*` required, `=value` optional with that default, or
-`?` optional with no default. Split at the **first** `:` and the **first** `=` — a default can
-contain either. `NONE` means no match; broaden the keywords before concluding the capability doesn't
-exist.
+`name*` is required, `name?` is optional with no default, and a default shows on the type as
+`int=5000`. The `out` line says what that macro's output looks like and carries any caveat that
+reading its results depends on — it is worth the few seconds, because those caveats used to be
+repeated in every single response and are now stated only here. `NONE` means no match; broaden the
+keywords before concluding the capability doesn't exist.
 
 The type is the part that decides whether a call works on the first try:
 
@@ -450,12 +455,28 @@ public static class M_Example
 - Name and description are the whole search surface. Write them for the query a future session
   would actually type, and say what the macro *returns*, not just what it does.
 
-**2. Return one compact single-line string.** The CLI renders the return value as one cell of a
-tab-separated row, so **tabs and newlines are destroyed in transit**. Compact JSON with
-single-letter keys and a `"k"` legend explaining them is the convention in this folder — it escapes
-free text instead of mutilating it, and stays readable. On bad input, `Debug.LogError` the detail
-and return a short `ERR <reason>` token. (Returning an object also works — the CLI serializes it —
-but you lose control of the key names and the payload gets noticeably fatter.)
+**2. Return flat, line-oriented text through `FlatBuilder`.** The CLI renders the return value as
+one cell of a tab-separated row, and **tabs and real newlines are destroyed in transit** — measured,
+not assumed: a macro emitting real newlines came back with every break collapsed to a single space
+and the whole answer on one run-on line. `FlatBuilder` writes breaks as the two-character escape
+`
+`, which survives, and owns the indentation, the `path:line` form and the `IsClean` guard so the
+twelve macros cannot drift apart.
+
+The folder used to answer in compact JSON with single-letter keys and a `"k"` legend explaining
+them, and the legend was the problem: emitted on every call, identical every time, and larger than
+the answer on anything small — 641 characters in front of a 192-character `m_find_type`, 157 in
+front of an empty console search. A line-oriented format has no encoding to explain, so it removes
+the legend rather than relocating it. The caveats that were worth keeping now live on each macro's
+`out` line in `M_FindMacro.OUTPUT_NOTES`, read once per session instead of once per call.
+
+Two rules keep a flat format honest. **Whitespace-bearing fields go last on their line** — paths and
+signatures contain spaces, so anything after one is ambiguous. And **any value that has to be passed
+back in goes through `FlatHelper.Handle`**, which escapes it and flags it with `~` when
+`JsonHelper.IsClean` fails: JSON escaping made a trailing or non-breaking space visible for free,
+plain text hides it completely, and these strings are lookup keys.
+
+On bad input, `Debug.LogError` the detail and return a short `ERR <reason>` token.
 
 **3. Compile, then call it.** A new macro does not exist until the Editor recompiles. Use the
 recompile-and-wait loop in `SKILL.md` (step 4) — **do not use `recompile_status`**, it does not
@@ -545,6 +566,10 @@ taking a batch of names, and all five parse the source rather than matching line
 
 All of them read files directly and run off the main thread, so they keep working **while the project
 is failing to compile** — which is when most of these questions get asked.
+
+**Parsing a macro result?** The `Result` is the **third tab-separated column** of the row, and the
+echoed parameters follow it as a fourth. Feeding the whole line to a JSON or text parser fails on
+the trailing parameters, which reads like malformed output and is not. `cut -f3` first.
 
 Keep `Grep` for what it's actually better at: text that isn't C# declarations or identifiers — shader
 code, JSON and YAML by shape rather than by wired name, `.asmdef` contents, log files, arbitrary

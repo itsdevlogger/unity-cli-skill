@@ -26,13 +26,6 @@ namespace UnityCliMacros
 
         private const int MAX_RESULTS_LIMIT = 25;
 
-        private const string LEGEND =
-            "r=results n=full name (use this in eval) a=assembly q=assembly-qualified name (use this in " +
-            "Type.GetType) e=1 when eval can name it unqualified because its namespace is already open " +
-            "k=kind b=base type; " +
-            "eval in the Editor references every loaded assembly, so a listed type is always reachable - " +
-            "only the qualification matters. Sorted best match first.";
-
         // Pure reflection over the loaded domain, so it can answer while the Editor is compiling —
         // which is when "what is this type called" tends to be the blocking question
         [CliCommand("m_type_info", "Resolve a type name to its full name, assembly and assembly-qualified name, so eval and Type.GetType can name it correctly on the first try.", MainThreadRequired = false)]
@@ -137,43 +130,46 @@ namespace UnityCliMacros
 
         private static string Format(List<KeyValuePair<int, System.Type>> matches, int totalMatches)
         {
-            var sb = new StringBuilder();
+            var sb = new FlatBuilder();
 
-            sb.Append("{\"k\":\"");
-            JsonHelper.AppendProse(sb, LEGEND);
-            sb.Append("\",\"r\":[");
-
-            for (var i = 0; i < matches.Count; i++)
+            if (matches.Count == 0)
             {
-                var type = matches[i].Value;
-
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append("{\"n\":\"");
-                JsonHelper.AppendString(sb, type.FullName ?? type.Name);
-                sb.Append("\",\"a\":\"");
-                JsonHelper.AppendString(sb, type.Assembly.GetName().Name);
-                sb.Append("\",\"q\":\"");
-                JsonHelper.AppendString(sb, type.FullName + ", " + type.Assembly.GetName().Name);
-                sb.Append("\",\"e\":").Append(IsOpen(type.Namespace) ? '1' : '0');
-                sb.Append(",\"k\":\"").Append(Kind(type));
-                sb.Append("\",\"b\":\"");
-                JsonHelper.AppendString(sb, type.BaseType == null ? "" : type.BaseType.Name);
-                sb.Append("\"}");
+                return "no matching type is loaded";
             }
 
-            sb.Append(']');
+            foreach (var match in matches)
+            {
+                var type = match.Value;
+                var full = type.FullName ?? type.Name;
+                var line = full + "  " + Kind(type);
+
+                if (type.BaseType != null)
+                {
+                    line += " : " + type.BaseType.Name;
+                }
+
+                // What to write in an eval, which is the question this macro exists to answer. Its
+                // absence is the answer in the other direction: fully qualify.
+                if (IsOpen(type.Namespace))
+                {
+                    line += "  [eval: " + type.Name + "]";
+                }
+
+                sb.Line(0, line);
+
+                // The assembly-qualified name, for Type.GetType. It already ends in the assembly, so
+                // reporting that separately as well would just be the same string twice.
+                sb.Line(1, full + ", " + type.Assembly.GetName().Name);
+            }
+
+            var notes = new List<string>();
 
             if (totalMatches > matches.Count)
             {
-                sb.Append(",\"note\":\"").Append(totalMatches - matches.Count)
-                    .Append(" further matches not shown - narrow the query or raise m\"");
+                notes.Add((totalMatches - matches.Count) + " further matches not shown - narrow the query or raise m");
             }
 
-            sb.Append('}');
+            FlatHelper.AppendNotes(sb, notes);
 
             return sb.ToString();
         }

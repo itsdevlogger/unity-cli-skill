@@ -141,84 +141,79 @@ namespace UnityCliMacros
         /// guessing costs a round trip — or worse, makes a whole command look unusable and sends the
         /// caller off to write the eval it would have replaced. "objectref" and "json" are the two that
         /// matter; SKILL.md documents what to pass for each.
-        private const string LEGEND =
-            "r=results n=name s=score d=desc a=args[token,desc]; token: name:type then * required, =default, or ? optional-no-default; " +
-            "type objectref takes a handle string ('/Root/Child', 'Assets/X.mat', 'guid:<hex>', instanceId); type json takes inline JSON; " +
-            "an m_ name prefix means a macro from the shared library at C:/unity-cli-skill/macros (editable, shared by every project on this machine), anything else is built into the Pipeline package (fixed)";
+        /// What each shared macro's output looks like, plus the caveats that used to ride along in a
+        /// per-call legend.
+        ///
+        /// The legends are gone from the macros themselves: a line-oriented answer explains its own
+        /// shape, so the half of a legend that defined single-letter keys had nothing left to define.
+        /// The other half was real — m_refs matching by name rather than by type, m_hierarchy not
+        /// telling two same-named types apart — and those are facts about a macro, not about a call,
+        /// so they belong with its description, which is read once per session instead of once per
+        /// invocation.
+        ///
+        /// Keyed by command name rather than carried on an attribute because [CliCommand] belongs to
+        /// the Pipeline package and cannot be extended from here. The cost is that a new macro has to
+        /// be added in two places; the alternative was a fixed attribute we do not own.
+        private static readonly Dictionary<string, string> OUTPUT_NOTES = new Dictionary<string, string>
+        {
+            { "m_find_macro", "One stanza per macro: name and score, description, then one line per argument - name* required, name? optional with no default, name=value defaulted." },
+            { "m_type_info", "Per type: full name, kind and base, with [eval: X] when eval can name it unqualified - its absence means fully qualify. Second line is the assembly-qualified name for Type.GetType." },
+            { "m_find_type", "Grouped by the name asked for. Per declaration: the signature, then assembly, namespace when it has one, and path:line. Finds each half of a partial separately. An exact match suppresses substring matches." },
+            { "m_find_member", "Grouped by the name asked for. Per declaration: the signature, then kind, declaring type, assembly and path:line. Parsed structurally, so locals and call sites can never appear here." },
+            { "m_outline", "Per type: declaration, location, usings, then members as line, span, kind, signature. Span is how many lines the member covers - read it to decide what is worth opening. Inherited members form their own section." },
+            { "m_refs", "Grouped by name then by file, with the path stated once. Per use: line, kind, receiver, enclosing Type.Member. NAME-BASED, NOT SEMANTIC - no overload resolution or type inference, so two unrelated types declaring one name both answer; narrow with type or asm. Kind is inferred from punctuation, with read as the catch-all. yaml rows are scene or prefab wiring; a member reached only that way has no source caller and is NOT dead code." },
+            { "m_hierarchy", "A section per direction, with depth rendered as indentation - a type nested under another is reached through it. Matched on base lists by SIMPLE NAME, so two same-named types in different namespaces are not told apart, and a base outside the searched roots ends the chain. Source cannot say which base is the class, so this covers extending and implementing alike." },
+            { "m_find_logs", "A count line, then one line per distinct message: severity, repeat count, time, message - with stack frames indented beneath when stack is not 0." },
+        };
 
         private static string FormatResults(List<KeyValuePair<int, MacroInfo>> matches)
         {
-            var sb = new StringBuilder();
-
-            sb.Append("{\"k\":\"");
-            AppendJsonString(sb, LEGEND);
-            sb.Append("\",\"r\":[");
-
-            for (var i = 0; i < matches.Count; i++)
+            if (matches.Count == 0)
             {
-                var macro = matches[i].Value;
-
-                if (i > 0)
-                {
-                    sb.Append(',');
-                }
-
-                sb.Append("{\"n\":\"");
-                AppendJsonString(sb, macro.name);
-                sb.Append("\",\"s\":");
-                sb.Append(matches[i].Key);
-                sb.Append(",\"d\":\"");
-                AppendJsonString(sb, macro.description);
-                sb.Append('"');
-
-                if (macro.args.Count > 0)
-                {
-                    sb.Append(",\"a\":[");
-
-                    for (var j = 0; j < macro.args.Count; j++)
-                    {
-                        var arg = macro.args[j];
-
-                        if (j > 0)
-                        {
-                            sb.Append(',');
-                        }
-
-                        sb.Append("[\"");
-                        AppendJsonString(sb, arg.name);
-
-                        if (arg.type.Length > 0)
-                        {
-                            sb.Append(':');
-                            AppendJsonString(sb, arg.type);
-                        }
-
-                        if (arg.required)
-                        {
-                            sb.Append('*');
-                        }
-                        else if (arg.hasDefault)
-                        {
-                            sb.Append('=');
-                            AppendJsonString(sb, arg.defaultValue);
-                        }
-                        else
-                        {
-                            sb.Append('?');
-                        }
-
-                        sb.Append("\",\"");
-                        AppendJsonString(sb, arg.description);
-                        sb.Append("\"]");
-                    }
-
-                    sb.Append(']');
-                }
-
-                sb.Append('}');
+                return "NONE";
             }
 
-            sb.Append("]}");
+            var sb = new FlatBuilder();
+
+            foreach (var match in matches)
+            {
+                var macro = match.Value;
+
+                sb.Line(0, macro.name + "  " + match.Key);
+                sb.Line(1, FlatHelper.Text(macro.description));
+
+                foreach (var arg in macro.args)
+                {
+                    // The marker rides on the name and the default on the type, so the shape of a
+                    // call is readable without a grammar note explaining the punctuation.
+                    var token = arg.name;
+
+                    if (arg.required)
+                    {
+                        token += "*";
+                    }
+                    else if (!arg.hasDefault)
+                    {
+                        token += "?";
+                    }
+
+                    var type = arg.type;
+
+                    if (!arg.required && arg.hasDefault)
+                    {
+                        type += "=" + (arg.defaultValue.Length == 0 ? "''" : arg.defaultValue);
+                    }
+
+                    sb.Line(2, token.PadRight(10) + type.PadRight(18) + " " + FlatHelper.Text(arg.description));
+                }
+
+                string note;
+
+                if (OUTPUT_NOTES.TryGetValue(macro.name, out note))
+                {
+                    sb.Line(2, "out       " + note);
+                }
+            }
 
             return sb.ToString();
         }
