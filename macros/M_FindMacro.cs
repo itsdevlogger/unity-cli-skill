@@ -204,7 +204,10 @@ namespace UnityCliMacros
                         type += "=" + (arg.defaultValue.Length == 0 ? "''" : arg.defaultValue);
                     }
 
-                    sb.Line(2, token.PadRight(10) + type.PadRight(18) + " " + FlatHelper.Text(arg.description));
+                    // Padded to columns, but always with a separator behind each field: a name long
+                    // enough to fill its own column would otherwise run straight into the type and
+                    // read as one word, which is what `match_casebool=False` was.
+                    sb.Line(2, token.PadRight(9) + " " + type.PadRight(17) + " " + FlatHelper.Text(arg.description));
                 }
 
                 string note;
