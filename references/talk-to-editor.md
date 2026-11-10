@@ -478,10 +478,20 @@ plain text hides it completely, and these strings are lookup keys.
 
 On bad input, `Debug.LogError` the detail and return a short `ERR <reason>` token.
 
-**3. Compile, then call it.** A new macro does not exist until the Editor recompiles. Use the
-recompile-and-wait loop in `SKILL.md` (step 4) — **do not use `recompile_status`**, it does not
-report reliably; poll `m_find_macro` for the new command name instead. If the new macro never
-appears, the compile failed: `unity command m_find_logs --grep "error CS" --sev error`.
+**3. Compile, then call it.** A new macro does not exist until the Editor recompiles. From the
+Unity project root:
+
+```powershell
+unity-recompile -Refresh
+```
+
+`-Refresh` is what makes the Editor notice a file you just wrote under the macros package; without
+it you get `{"stage":"up_to_date"}` and your change isn't live. The script blocks until the domain
+has actually reloaded and returns one JSON line: `{"stage":"reloaded"}` means the macro is callable,
+and a compile error comes back as `{"stage":"compiled","failed":true,...}` with the diagnostics in
+`messages`, so no log query is needed. Full output table and flags: `SKILL.md` step 4. **Do not use
+`recompile_status`** and do not hand-roll a poll — step 4 explains why neither can see a
+failed compile.
 
 ## Improving the macros
 
@@ -639,7 +649,8 @@ every existing override in one call — and tell the user which objects you skip
 conversion reported as complete is worse than a refusal.
 
 **Scripts need a compile before use.** A newly written MonoBehaviour type doesn't exist until the
-Editor recompiles: use the wait loop from `SKILL.md` step 4, then `attach_script`. Domain reloads
+Editor recompiles: run the waiter (`unity-recompile`, `SKILL.md` step 4) from the project root,
+then `attach_script`. Domain reloads
 also drop `eval` state, so don't stash values across one.
 
 **One broad query beats many narrow ones.** The Editor dispatches **one command per ~1.15s** no

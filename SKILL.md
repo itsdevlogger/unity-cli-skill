@@ -146,43 +146,71 @@ Adding the macros package is what makes the `m_` macros exist at all; it is requ
 
 ## Step 4: Force a recompile and wait for the Editor to answer
 
-Only needed if step 3 wrote to `manifest.json`.
+During setup this step is only needed if step 3 wrote to `manifest.json`. It comes back later, every
+time you touch a macro (step 6), so the whole step is written once here.
 
-A manifest change is picked up when the Editor regains focus, and a package resolve plus domain
-reload follows. So: **ask the user to click on the Unity Editor window**, then wait.
-
-**`recompile_status` is unreliable, so do not use it.** The workaround is to poll for a macro that can
-only answer once the compile has finished and the assemblies have reloaded:
+**Use the waiter script. Don't hand-roll a wait loop, and don't use `recompile_status`** — it does
+not report reliably.
 
 ```powershell
-unity command recompile; $deadline = (Get-Date).AddMinutes(5); $ok = $false; while ((Get-Date) -lt $deadline) { $out = unity command m_find_macro --q m_find_macro 2>&1 | Out-String; if ($out -match '"n":"m_find_macro"') { $ok = $true; break }; Start-Sleep -Seconds 5 }; if ($ok) { "READY" } else { "TIMEOUT" }
+unity-recompile -TimeoutSeconds 600
 ```
 
-(Drop the leading `unity command recompile;` when the Editor is still resolving packages. There is
-no bridge to receive it yet, and the poll alone is enough.)
+`C:/unity-cli-skill/macros/.bin` is on `PATH`, so the bare name is the whole command. The bare name
+resolves in **PowerShell**; from a bash shell call `unity-recompile.cmd`. If neither resolves — a
+shell older than the `PATH` entry, or an install that never added one — run
+`C:\unity-cli-skill\macros\.bin\unity-recompile.cmd` directly.
 
-Notes that save real time:
+Run it **from the Unity project root** — it keys off that project's
+`ProjectSettings/ProjectVersion.txt` and reads the signal file under its `Library/`. It sends
+`recompile`, retrying until an Editor is reachable, waits out the compile *and* the domain reload,
+and prints one JSON line:
 
-- **`No Unity Editor instances found with reachable Pipeline servers` during the poll is the domain
-  reload, not a failure.** It arrives with a list of troubleshooting suggestions that are wrong in
-  this situation. Ignore them and let the loop keep polling.
-- `TIMEOUT` means either the Editor was never focused, or the macros failed to compile. Check with
-  `unity command m_find_logs --grep "error CS" --sev error`, because that macro answers off the main
-  thread, so it works mid-compile.
-- **`recompile` answering `{"status":"up_to_date"}` after you added or edited a macro means the Editor
-  hasn't noticed the file yet**, not that your change is already live. `<home>/macros` is a local UPM
-  package outside `Assets/`, and an unfocused Editor may not pick up writes there on its own. Force the
-  import once, then recompile:
+| Output | Exit | Meaning |
+|---|---|---|
+| `{"stage":"reloaded",…}` | 0 | Compiled, and the new assemblies are live. Carry on. |
+| `{"stage":"up_to_date",…}` | 0 | The Editor saw nothing to compile — see `-Refresh`. |
+| `{"stage":"compiled","failed":true,…}` | 1 | Compile errors. `messages` carries up to 20 of them with file and line, so no follow-up log query is needed. |
+| `{"stage":"error",…}` | 2 | Not a project root, or no reachable Editor within the timeout. |
+| `{"stage":"timeout",…}` | 3 | No finished-compile signal inside the timeout. |
 
-  ```bash
-  unity command eval --code "UnityEditor.AssetDatabase.Refresh(); return 1.ToString();"
-  ```
+- **`-Refresh`** runs `AssetDatabase.Refresh()` first. Add it whenever you just wrote or edited a file
+  under `C:/unity-cli-skill/macros`: that is a local UPM package outside `Assets/`, and an unfocused
+  Editor may not pick up writes there on its own — `up_to_date` right after an edit is exactly that.
+- **`-TimeoutSeconds`** defaults to 240. Use ~600 for a first-run package resolve.
+- `No Unity Editor instances found with reachable Pipeline servers` during the wait is the domain
+  reload, not a failure. It arrives with troubleshooting suggestions that are wrong here; the script
+  already retries through it.
 
-  That `eval` usually returns `Main thread operation timed out after 5000ms` — the refresh is slower
-  than the eval timeout. **Ignore it; the import still happens.** Send `recompile` after it and you'll
-  get `{"status":"compiling"}`. Subsequent edits in the same session recompile normally.
-- Use this same loop, with the new command name substituted into both the `--q` and the regex,
-  every time you add or edit a macro later on.
+**Run this after every change to `C:/unity-cli-skill/macros`.** A new or edited macro does not exist
+until it comes back.
+
+Why a script instead of a loop: no single bridge call can span a recompile. `recompile` returns as
+soon as compilation is queued, and the Pipeline HTTP server drops any request still in flight when
+the domain reloads. So the macro library ships `M_CompileSignal`, which writes
+`Library/unity-cli-compile.json` on every `compilationFinished` and `DidReloadScripts`, and the
+script blocks on that file rather than on the bridge. That is what makes a *failed* compile
+reportable: a failure never reloads the domain, so anything polling the bridge waits out its whole
+timeout on the one outcome it most needs to report.
+
+### First run only: after step 3 wrote to `manifest.json`
+
+A manifest change is picked up when the Editor regains focus, and a package resolve plus domain
+reload follows. So **ask the user to click on the Unity Editor window**, then run the waiter with
+`-TimeoutSeconds 600` (the resolve is slower than a compile), then confirm the macros actually
+landed:
+
+```bash
+unity command m_find_macro --q m_find_macro
+```
+
+That one call is not optional here: on the first compile in a project `up_to_date` is **not**
+proof. If the macros assembly failed to compile then `M_CompileSignal` failed to compile with it,
+so there is no signal file and nothing to report, and the script can only answer `up_to_date`. If `m_find_macro` doesn't answer with its own name:
+
+- the Editor was never focused — ask again, then re-run the waiter; or
+- the macros failed to compile — `unity command m_find_logs --grep "error CS" --sev error`. That
+  macro answers off the main thread, so it works mid-compile.
 
 ---
 

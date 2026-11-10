@@ -106,6 +106,11 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Agents claude,cursor
 Add `-Force` to replace something already sitting in that folder, or `-Uninstall` to remove the
 junctions again. Uninstalling only removes the links; your clone is never touched.
 
+Installing also appends `C:\unity-cli-skill\macros\.bin` to your **user** `PATH`, so the helper
+scripts in there can be called by name — `unity-recompile` is the one the skill leans on. It stays
+your `PATH`: pass `-SkipPath` to leave it alone, and `-Uninstall` takes the entry back out once no
+agent links here any more. Open a new terminal afterwards to pick it up.
+
 Restart your agent, then ask for something Unity-shaped. The skill triggers on its own.
 
 ---
@@ -149,6 +154,7 @@ that's the expected outcome.
 | `SKILL.md` | The instructions Claude follows: setup, the seven steps, the contribution flow. |
 | `install.bat` / `install.ps1` | The installer. Junctions this clone into the skills folder of whichever agents you pick. Double-click the `.bat`, or call the `.ps1` with `-Agents`. |
 | `macros/` | The shared `m_*` macro library, a Unity UPM package (`com.unitycli.macros`) that gets linked into each project. Compact, token-cheap commands for searching, digesting and auditing a project. |
+| `macros/.bin/` | Host-side helper scripts, not Unity code (the leading dot keeps Unity from importing them). The installer puts this folder on your user `PATH`, so they can be called by name. `unity-recompile` triggers a recompile and blocks until the Editor has compiled *and* reloaded, printing one line of JSON — including the compile errors, which is the case a bridge poll can't see. |
 | `references/talk-to-editor.md` | The operating manual: addressing objects, which macros to prefer, `eval` rules, how to write a macro. |
 | `references/eval-cookbook.md` | Working C# snippets for running through `eval`. |
 | `references/troubleshooting.md` | Bridge not responding, compile errors, stale handles, exit codes. |

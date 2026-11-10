@@ -98,7 +98,20 @@ field in the response tells you how many entries were actually in the buffer.
 ## Nothing appears to happen
 
 **The Editor is compiling or importing.** Tool calls queue behind it. `recompile_status` is
-unreliable — poll for a macro instead, using the wait loop in `SKILL.md` step 4.
+unreliable, and polling the bridge is no better — block on the waiter script instead, from the
+project root: `unity-recompile` (`unity-recompile.cmd` from a bash shell; `SKILL.md` step 4).
+
+**You edited a macro and nothing changed.** `C:/unity-cli-skill/macros` is a local UPM package
+outside `Assets/`, so an unfocused Editor may never import the write, and the waiter answers
+`{"stage":"up_to_date"}`. Re-run it with `-Refresh`, which forces an `AssetDatabase.Refresh()` first.
+
+**The macros compiled with errors.** The waiter exits 1 and prints
+`{"stage":"compiled","failed":true,...}` with up to 20 diagnostics in `messages`, file and line
+included. A failed compile never reloads the domain, which is why the Editor keeps answering with
+the *old* macro set and nothing looks broken from the bridge's side. If the waiter times out instead
+(exit 3, or `up_to_date` in a project whose macros have never compiled at all), ask the console
+directly: `unity command m_find_logs --grep "error CS" --sev error`, which answers off the main
+thread.
 
 **The change was made but not saved.** Scene edits live in memory. Confirm with
 `list_open_scenes` — `isDirty: true` means it's unsaved; call `save_scene` or `save_all`.

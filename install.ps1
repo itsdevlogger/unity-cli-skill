@@ -10,12 +10,18 @@
         .\install.ps1 -Agents claude,cursor
         .\install.ps1 -Agents claude -Force
         .\install.ps1 -Agents claude -Uninstall
+        .\install.ps1 -Agents claude -SkipPath
+
+    Installing also puts macros\.bin on the user PATH, so the helper scripts
+    in there (unity-recompile) can be called by name from any directory.
+    -SkipPath leaves the variable alone for anyone who manages PATH themselves.
 #>
 [CmdletBinding()]
 param(
     [string[]] $Agents,
     [switch] $Force,
-    [switch] $Uninstall
+    [switch] $Uninstall,
+    [switch] $SkipPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +41,104 @@ $AgentRegistry = [ordered]@{
 
 $CANONICAL_HOME = 'C:\unity-cli-skill'
 $RepoRoot = $PSScriptRoot
+# Host-side helper scripts, not Unity code. This goes on PATH so the skill can
+# call `unity-recompile` by name instead of hardcoding a path into its docs.
+$BinDir = Join-Path $RepoRoot 'macros\.bin'
+
+function Edit-PathValue {
+    # Pure string surgery on a PATH value: no registry, so the awkward cases
+    # (duplicate entry, trailing semicolons, quoted entries) are easy to reason
+    # about. Returns $null when nothing needs to change, which is what keeps a
+    # re-run from rewriting the variable at all.
+    param(
+        [string] $Raw,
+        [string] $Dir,
+        [switch] $Remove
+    )
+
+    $target = $Dir.TrimEnd('\')
+    $kept = @()
+    $found = $false
+
+    foreach ($entry in @($Raw -split ';')) {
+        # -eq on strings is case-insensitive, which is what Windows paths want.
+        if ($entry.Trim().Trim('"').TrimEnd('\') -eq $target) {
+            $found = $true
+            continue
+        }
+        $kept += $entry
+    }
+
+    if ($Remove) {
+        if (-not $found) { return $null }
+        return ((@($kept | Where-Object { $_.Trim() })) -join ';')
+    }
+
+    if ($found) { return $null }
+    return ((@($kept | Where-Object { $_.Trim() }) + $Dir) -join ';')
+}
+
+function Publish-EnvironmentChange {
+    # Tell Explorer the environment moved, the way setx does. Without this,
+    # anything launched from the already-running Explorer keeps the old PATH
+    # until the next sign-in.
+    if (-not ('UnityCliSkill.Native' -as [type])) {
+        Add-Type -Namespace 'UnityCliSkill' -Name 'Native' -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(
+    System.IntPtr hWnd, uint Msg, System.IntPtr wParam, string lParam,
+    uint fuFlags, uint uTimeout, out System.IntPtr lpdwResult);
+'@
+    }
+
+    $echo = [System.IntPtr]::Zero
+    # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG, 100ms.
+    [void] [UnityCliSkill.Native]::SendMessageTimeout(
+        [System.IntPtr] 0xffff, 0x1A, [System.IntPtr]::Zero, 'Environment', 2, 100, [ref] $echo)
+}
+
+function Update-UserPath {
+    param([string] $Dir, [switch] $Remove)
+
+    # Only ever the per-user variable: the machine one needs elevation and is
+    # not this installer's business.
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    if (-not $key) {
+        Write-Host '  ! PATH: could not open HKCU\Environment, leaving PATH alone' -ForegroundColor Yellow
+        return
+    }
+
+    try {
+        # DoNotExpandEnvironmentNames keeps entries like %USERPROFILE%\bin
+        # literal. Writing back an expanded copy would silently freeze them,
+        # and preserving the value kind keeps REG_EXPAND_SZ from decaying to
+        # REG_SZ, which is the same bug one layer down.
+        $raw = [string] $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        try { $kind = $key.GetValueKind('Path') } catch { }
+
+        $next = Edit-PathValue -Raw $raw -Dir $Dir -Remove:$Remove
+        if ($null -eq $next) {
+            $note = if ($Remove) { 'was not in your user PATH' } else { 'already in your user PATH' }
+            Write-Host "  = PATH: $Dir $note" -ForegroundColor DarkGray
+            return
+        }
+
+        $key.SetValue('Path', $next, $kind)
+    } finally {
+        $key.Close()
+    }
+
+    Publish-EnvironmentChange
+
+    if ($Remove) {
+        Write-Host "  - PATH: removed $Dir" -ForegroundColor Green
+    } else {
+        $env:Path = "$env:Path;$Dir"
+        Write-Host "  + PATH: added $Dir" -ForegroundColor Green
+        Write-Host '    Open a new terminal before calling unity-recompile.' -ForegroundColor DarkGray
+    }
+}
 
 function Get-SkillName {
     # The junction is named after the skill, so read it from the frontmatter
@@ -214,9 +318,24 @@ Write-Host ''
 if ($Uninstall) {
     Write-Host 'Uninstalling:' -ForegroundColor Cyan
     foreach ($row in $selected) { Uninstall-One -Row $row }
+
+    if (-not $SkipPath) {
+        # The PATH entry isn't per-agent, so it only goes away once no agent
+        # links here any more. Uninstalling one of several agents leaves it.
+        $stillLinked = @(
+            foreach ($key in $AgentRegistry.Keys) { Get-AgentState -Key $key -SkillName $skillName }
+        ) | Where-Object { $_.State -eq 'linked' }
+
+        if (@($stillLinked).Count -gt 0) {
+            Write-Host "  = PATH: kept, still linked for $((@($stillLinked).Display) -join ', ')" -ForegroundColor DarkGray
+        } else {
+            Update-UserPath -Dir $BinDir -Remove
+        }
+    }
 } else {
     Write-Host 'Installing:' -ForegroundColor Cyan
     foreach ($row in $selected) { Install-One -Row $row -Replace:$Force }
+    if (-not $SkipPath) { Update-UserPath -Dir $BinDir }
 }
 
 Write-Host ''
